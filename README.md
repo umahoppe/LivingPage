@@ -12,8 +12,8 @@ Public HTML articles can be imported by URL. The Sites Worker extracts readable 
 2. Select a sentence and choose Explain, Simplify, Visualize, Research, or Verify.
 3. The selection becomes a durable text anchor and the small command bar prepares an agent request.
 4. A WebMCP-capable agent reads the live selection and visible page state, then updates the article or Visual Thinking Canvas.
-5. Reframe the same research as Research, Diagram, Timeline, or Comparison without changing the underlying sources.
-6. Review provenance in place, collapse or remove inline layers, or undo the complete agent operation.
+5. Reframe the same research as Research, Diagram, Timeline, Comparison, or a sourced Image Board without changing the underlying sources.
+6. Review provenance in place, open image previews, remove mistaken anchors or individual cards, or undo the complete operation.
 
 ## WebMCP tools
 
@@ -28,9 +28,9 @@ Public HTML articles can be imported by URL. The Sites Worker extracts readable 
 - `insert_simplified_layer` — adds reversible plain-language text without replacing the original.
 - `add_highlight` — applies a restrained semantic highlight with a reason.
 - `add_verification` — adds a cautious source-backed verification state.
-- `create_visualization` / `update_visualization` — transforms the right canvas into Research, Diagram, Timeline, or Comparison views.
+- `create_visualization` / `update_visualization` — transforms and automatically opens the right canvas as Research, Diagram, Timeline, Comparison, or a sourced Image Board.
 
-Read tools use `readOnlyHint` and `untrustedContentHint`. Research data, inline layers, and canvas state are stored separately but share the same reversible history and local persistence.
+Read tools use `readOnlyHint` and `untrustedContentHint`. Research data, inline layers, and canvas state are stored separately but share the same reversible history and local persistence. Removing an anchor cascades through its inline layers, research cards, and sources; Undo restores the whole operation.
 
 ## Local development
 

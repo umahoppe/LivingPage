@@ -224,6 +224,95 @@ export function removeAnnotation(state: ResearchState, annotationId: string): Re
   return commitDocument(state, next, "Removed a Living Page layer", "human");
 }
 
+function descendantNodeIds(document: ResearchDocument, rootId: string) {
+  const ids = new Set([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const node of document.nodes) {
+      if (node.parentId && ids.has(node.parentId) && !ids.has(node.id)) {
+        ids.add(node.id);
+        changed = true;
+      }
+    }
+  }
+  return ids;
+}
+
+function withoutNodeReferences(document: ResearchDocument, removedIds: Set<string>): ResearchDocument {
+  return {
+    ...document,
+    nodes: document.nodes.filter((node) => !removedIds.has(node.id)),
+    sources: document.sources.filter((source) => !removedIds.has(source.nodeId)),
+    annotations: document.annotations.map((annotation) => ({
+      ...annotation,
+      relatedNodeIds: annotation.relatedNodeIds.filter((id) => !removedIds.has(id)),
+    })),
+    canvasView: {
+      ...document.canvasView,
+      focusedNodeIds: document.canvasView.focusedNodeIds.filter((id) => !removedIds.has(id)),
+    },
+  };
+}
+
+export function removeResearchNode(state: ResearchState, nodeId: string): ResearchState {
+  if (!state.document.nodes.some((node) => node.id === nodeId)) return state;
+  const removedIds = descendantNodeIds(state.document, nodeId);
+  return commitDocument(
+    state,
+    withoutNodeReferences(state.document, removedIds),
+    `Removed ${removedIds.size} research ${removedIds.size === 1 ? "card" : "cards"}`,
+    "human",
+  );
+}
+
+export function removeAnchor(state: ResearchState, anchorId: string): ResearchState {
+  if (!state.document.anchors.some((anchor) => anchor.id === anchorId)) return state;
+  const removedIds = new Set(state.document.nodes.filter((node) => node.anchorId === anchorId).map((node) => node.id));
+  const cleaned = withoutNodeReferences(state.document, removedIds);
+  return commitDocument(state, {
+    ...cleaned,
+    anchors: cleaned.anchors.filter((anchor) => anchor.id !== anchorId),
+    annotations: cleaned.annotations.filter((annotation) => annotation.anchorId !== anchorId),
+  }, "Removed an article anchor and its layers", "human");
+}
+
+export function removeCanvasItem(state: ResearchState, itemId: string): ResearchState {
+  const data = state.document.canvasView.data;
+  const nextData = {
+    ...data,
+    diagram: data.diagram ? {
+      nodes: data.diagram.nodes.filter((node) => node.id !== itemId),
+      edges: data.diagram.edges.filter((edge) => edge.from !== itemId && edge.to !== itemId),
+    } : undefined,
+    timeline: data.timeline?.filter((item) => item.id !== itemId),
+    comparison: data.comparison ? {
+      ...data.comparison,
+      rows: data.comparison.rows.filter((row, index) => (row.id ?? `row-${index}`) !== itemId),
+    } : undefined,
+    imageBoard: data.imageBoard?.filter((item) => item.id !== itemId),
+  };
+  return commitDocument(state, {
+    ...state.document,
+    canvasView: { ...state.document.canvasView, data: nextData, updatedAt: new Date().toISOString() },
+  }, "Removed a visualization card", "human");
+}
+
+function validatedCanvasData(data: CanvasViewState["data"]) {
+  const imageBoard = data.imageBoard?.map((item) => {
+    const imageUrl = new URL(item.imageUrl);
+    if (!['http:', 'https:'].includes(imageUrl.protocol)) throw new Error(`Unsupported image URL protocol: ${imageUrl.protocol}`);
+    let sourceUrl: string | undefined;
+    if (item.sourceUrl) {
+      const parsed = new URL(item.sourceUrl);
+      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error(`Unsupported source URL protocol: ${parsed.protocol}`);
+      sourceUrl = parsed.toString();
+    }
+    return { ...item, imageUrl: imageUrl.toString(), sourceUrl };
+  });
+  return { ...data, imageBoard };
+}
+
 export function setCanvasView(
   state: ResearchState,
   input: Partial<CanvasViewState> & Pick<CanvasViewState, "type">,
@@ -235,7 +324,7 @@ export function setCanvasView(
     focusedNodeIds: input.focusedNodeIds ?? state.document.canvasView.focusedNodeIds,
     filters: input.filters ?? state.document.canvasView.filters,
     visualConfig: input.visualConfig ?? state.document.canvasView.visualConfig,
-    data: input.data ?? state.document.canvasView.data,
+    data: input.data ? validatedCanvasData(input.data) : state.document.canvasView.data,
     updatedAt: new Date().toISOString(),
   };
   return commitDocument(

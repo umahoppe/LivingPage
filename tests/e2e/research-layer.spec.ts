@@ -280,3 +280,80 @@ test("an agent transforms a selection into a sourced Living Page and visual canv
   await expect(page.locator('[data-canvas-type="diagram"]')).toBeVisible();
   expect(consoleErrors).toEqual([]);
 });
+
+test("image boards auto-open and mistaken anchors or canvas cards can be removed", async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await installWebMCPStub(page);
+  await page.route("https://images.example/**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="#204c35"/><circle cx="320" cy="180" r="90" fill="#eac369"/></svg>',
+    });
+  });
+  await page.goto("/");
+
+  await page.locator('[data-block-id="claim-growth"]').evaluate((element) => {
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    range.setStart(element.firstChild!, 0);
+    range.setEnd(element.firstChild!, 49);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.getByRole("button", { name: "Explain selection" }).click();
+  await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const selectionResult = await tools.get_current_selection.execute({});
+    const selection = JSON.parse(selectionResult.content[0].text) as { associatedAnchorId: string };
+    await tools.insert_inline_explanation.execute({
+      anchorId: selection.associatedAnchorId,
+      title: "Inline only",
+      explanation: "This explanation belongs beside the source text.",
+    });
+  });
+
+  await expect(page.getByText("Understanding stays beside the text")).toBeVisible();
+  await expect(page.locator(".anchor-group")).toHaveCount(0);
+  await page.getByRole("button", { name: "Close visual canvas" }).click();
+  await expect(page.getByRole("complementary", { name: "Visual Thinking Canvas" })).toHaveCount(0);
+
+  await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    await tools.create_visualization.execute({
+      type: "image_board",
+      title: "Comparable product screens",
+      sourceNodeIds: [],
+      data: { imageBoard: [
+        { id: "screen-a", title: "Product A", imageUrl: "https://images.example/a.svg", note: "Primary screen", sourceUrl: "https://example.com/a", sourceLabel: "Product A source" },
+        { id: "screen-b", title: "Product B", imageUrl: "https://images.example/b.svg", note: "Alternative screen", sourceUrl: "https://example.com/b", sourceLabel: "Product B source" },
+      ] },
+      config: {},
+    });
+  });
+
+  await expect(page.getByRole("complementary", { name: "Visual Thinking Canvas" })).toBeVisible();
+  await expect(page.locator('[data-canvas-type="image_board"] .image-card')).toHaveCount(2);
+  await expect(page.locator(".image-card img").first()).toBeVisible();
+  expect(await page.locator(".image-card img").first().evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "Open image Product A" }).click();
+  await expect(page.locator(".image-preview-backdrop")).toBeVisible();
+  await page.getByRole("button", { name: "Close image preview" }).click();
+
+  await page.getByRole("button", { name: "Remove visualization card Product A" }).click();
+  await expect(page.locator('[data-canvas-type="image_board"] .image-card')).toHaveCount(1);
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(page.locator('[data-canvas-type="image_board"] .image-card')).toHaveCount(2);
+
+  await page.locator('[data-block-id="claim-growth"]').scrollIntoViewIfNeeded();
+  await page.getByRole("button", { name: "Remove anchor from article" }).click();
+  await expect(page.locator('[data-block-id="claim-growth"] [data-anchor-id]')).toHaveCount(0);
+  await expect(page.getByText("Inline only")).toHaveCount(0);
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(page.getByText("Inline only")).toBeVisible();
+  expect(consoleErrors).toEqual([]);
+});

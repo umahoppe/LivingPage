@@ -13,6 +13,7 @@ import {
   GitBranch,
   Globe2,
   History,
+  Image as ImageIcon,
   Link2,
   LoaderCircle,
   Network,
@@ -24,6 +25,7 @@ import {
   ShieldCheck,
   Sparkles,
   Table2,
+  Trash2,
   Undo2,
   X,
 } from "lucide-react";
@@ -35,6 +37,7 @@ import type {
   ArticleDocument,
   BranchType,
   CanvasType,
+  ImageBoardItem,
   LivingAnnotation,
   ResearchAnchor,
   ResearchNode,
@@ -128,6 +131,7 @@ function App() {
     replaceArticle,
     toggleLivingAnnotation,
     removeLivingAnnotation,
+    removeResearchAnchor,
     undo,
     redo,
   } = useResearch();
@@ -140,6 +144,12 @@ function App() {
   const commandRef = useRef<HTMLInputElement>(null);
   const selectionTimer = useRef<number | undefined>(undefined);
   const article = state.document.article;
+
+  useEffect(() => {
+    const openCanvas = () => setCanvasOpen(true);
+    window.addEventListener("livingpage:open-canvas", openCanvas);
+    return () => window.removeEventListener("livingpage:open-canvas", openCanvas);
+  }, []);
 
   const updatePendingSelection = useCallback(() => {
     const selection = window.getSelection();
@@ -342,6 +352,7 @@ function App() {
                   onAnchorClick={setActiveAnchorId}
                   onToggleAnnotation={toggleLivingAnnotation}
                   onRemoveAnnotation={removeLivingAnnotation}
+                  onRemoveAnchor={removeResearchAnchor}
                 />
               ))}
             </div>
@@ -483,6 +494,7 @@ function ArticleBlockView({
   onAnchorClick,
   onToggleAnnotation,
   onRemoveAnnotation,
+  onRemoveAnchor,
 }: {
   block: ArticleBlock;
   anchors: ResearchAnchor[];
@@ -491,6 +503,7 @@ function ArticleBlockView({
   onAnchorClick: (id: string) => void;
   onToggleAnnotation: (id: string) => void;
   onRemoveAnnotation: (id: string) => void;
+  onRemoveAnchor: (id: string) => void;
 }) {
   const Tag = block.kind === "h2" ? "h2" : block.kind === "quote" ? "blockquote" : "p";
   if (!anchors.length) {
@@ -519,6 +532,9 @@ function ArticleBlockView({
           <span className="anchor-pin"><Link2 size={10} /></span>
         </mark>
         {highlight?.reason && <span className={`highlight-reason ${highlight.highlightType}`}>{highlight.reason}</span>}
+        <button type="button" className="anchor-remove-inline" onClick={() => onRemoveAnchor(anchor.id)} aria-label="Remove anchor from article" title="Remove anchor and related content">
+          <Trash2 size={11} />
+        </button>
         {anchorAnnotations.filter((annotation) => annotation.type !== "highlight").map((annotation) => (
           <InlineAnnotationCard
             key={annotation.id}
@@ -592,8 +608,24 @@ function ResearchLayer({ onClose }: { onClose: () => void }) {
     addQuickBranch,
     toggleBranch,
     changeCanvasView,
+    removeResearchAnchor,
   } = useResearch();
   const canvasView = state.document.canvasView;
+  const researchAnchors = state.document.anchors.filter((anchor) => {
+    const hasResearch = state.document.nodes.some((node) => node.anchorId === anchor.id);
+    const hasInlineLayer = state.document.annotations.some((annotation) => annotation.anchorId === anchor.id);
+    return hasResearch || !hasInlineLayer;
+  });
+  const inlineOnlyCount = state.document.anchors.length - researchAnchors.length;
+  const canvasItemCount = canvasView.type === "research_graph"
+    ? state.document.nodes.length
+    : canvasView.type === "diagram"
+      ? canvasView.data.diagram?.nodes.length ?? 0
+      : canvasView.type === "timeline"
+        ? canvasView.data.timeline?.length ?? state.document.nodes.length
+        : canvasView.type === "comparison_table"
+          ? canvasView.data.comparison?.rows.length ?? state.document.nodes.length
+          : canvasView.data.imageBoard?.length ?? 0;
   const [copyFeedback, setCopyFeedback] = useState<{ anchorId: string; status: "copied" | "failed" }>();
   const copyFeedbackTimer = useRef<number | undefined>(undefined);
 
@@ -632,7 +664,7 @@ function ResearchLayer({ onClose }: { onClose: () => void }) {
           <h2>{canvasView.title}</h2>
         </div>
         <div className="canvas-header-actions">
-          <div className="layer-count">{state.document.anchors.length} anchors</div>
+          <div className="layer-count">{canvasItemCount} cards</div>
           <button className="canvas-close" onClick={onClose} aria-label="Close visual canvas"><PanelRightClose size={15} /></button>
         </div>
       </div>
@@ -643,6 +675,7 @@ function ResearchLayer({ onClose }: { onClose: () => void }) {
           ["diagram", "Diagram", Network],
           ["timeline", "Timeline", History],
           ["comparison_table", "Compare", Table2],
+          ["image_board", "Images", ImageIcon],
         ] as const).map(([type, label, Icon]) => (
           <button
             key={type}
@@ -656,7 +689,7 @@ function ResearchLayer({ onClose }: { onClose: () => void }) {
 
       {canvasView.type !== "research_graph" ? (
         <VisualizationView type={canvasView.type} />
-      ) : !state.document.anchors.length ? (
+      ) : !researchAnchors.length ? (
         <div className="empty-layer">
           <div className="empty-illustration">
             <div className="empty-line line-a" />
@@ -665,24 +698,31 @@ function ResearchLayer({ onClose }: { onClose: () => void }) {
             <div className="empty-node node-b" />
             <div className="empty-flower"><Flower2 size={27} /></div>
           </div>
-          <div className="step-label">STEP 01</div>
-          <h3>Select a claim in the article</h3>
-          <p>Highlight a sentence on the left. Its evidence, explanations, and counterpoints will grow here without leaving the page.</p>
+          <div className="step-label">{inlineOnlyCount ? "INLINE LAYERS ACTIVE" : "STEP 01"}</div>
+          <h3>{inlineOnlyCount ? "Understanding stays beside the text" : "Select a claim in the article"}</h3>
+          <p>{inlineOnlyCount
+            ? `${inlineOnlyCount} anchored ${inlineOnlyCount === 1 ? "passage has" : "passages have"} inline help. Research cards appear here only when you ask to deepen the topic.`
+            : "Highlight a sentence on the left. Its evidence, explanations, and counterpoints will grow here without leaving the page."}</p>
           <div className="agent-hint"><Bot size={16} /><span>Your agent can read and grow this layer through WebMCP.</span></div>
         </div>
       ) : (
         <div className="anchor-list">
-          {state.document.anchors.map((anchor, index) => {
+          {researchAnchors.map((anchor, index) => {
             const nodes = state.document.nodes.filter((node) => node.anchorId === anchor.id);
             const topNodes = nodes.filter((node) => !node.parentId);
             const isActive = anchor.id === activeAnchorId;
             return (
               <section key={anchor.id} className={`anchor-group ${isActive ? "active" : ""}`}>
-                <button className="anchor-heading" onClick={() => setActiveAnchorId(anchor.id)}>
-                  <span className="anchor-index">{String(index + 1).padStart(2, "0")}</span>
-                  <span className="anchor-quote">“{anchor.quote}”</span>
-                  <span className="anchor-node-count">{nodes.length}</span>
-                </button>
+                <div className="anchor-heading-row">
+                  <button className="anchor-heading" onClick={() => setActiveAnchorId(anchor.id)}>
+                    <span className="anchor-index">{String(index + 1).padStart(2, "0")}</span>
+                    <span className="anchor-quote">“{anchor.quote}”</span>
+                    <span className="anchor-node-count">{nodes.length}</span>
+                  </button>
+                  <button className="anchor-delete" onClick={() => removeResearchAnchor(anchor.id)} aria-label={`Remove anchor ${index + 1}`} title="Remove anchor and related content">
+                    <Trash2 size={13} />
+                  </button>
+                </div>
                 {isActive && (
                   <div className="anchor-content">
                     {topNodes.length ? (
@@ -742,9 +782,10 @@ function ResearchLayer({ onClose }: { onClose: () => void }) {
 }
 
 function VisualizationView({ type }: { type: Exclude<CanvasType, "research_graph"> }) {
-  const { state, setSelectedNodeId } = useResearch();
+  const { state, setSelectedNodeId, removeVisualizationCard } = useResearch();
   const { data } = state.document.canvasView;
   const researchNodes = state.document.nodes;
+  const [previewImage, setPreviewImage] = useState<ImageBoardItem>();
 
   if (type === "diagram") {
     const nodes = data.diagram?.nodes ?? researchNodes.map((node) => ({
@@ -763,11 +804,14 @@ function VisualizationView({ type }: { type: Exclude<CanvasType, "research_graph
           {nodes.map((node, index) => (
             <div className="diagram-step" key={node.id}>
               {index > 0 && <div className="diagram-arrow">↓</div>}
-              <button onClick={() => node.sourceNodeIds?.[0] && setSelectedNodeId(node.sourceNodeIds[0])}>
-                <span>{String(index + 1).padStart(2, "0")}</span>
-                <strong>{node.label}</strong>
-                {node.description && <p>{node.description}</p>}
-              </button>
+              <div className="visual-card-shell">
+                <button onClick={() => node.sourceNodeIds?.[0] && setSelectedNodeId(node.sourceNodeIds[0])}>
+                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  <strong>{node.label}</strong>
+                  {node.description && <p>{node.description}</p>}
+                </button>
+                <button className="visual-card-delete" onClick={() => removeVisualizationCard(node.id)} aria-label={`Remove visualization card ${node.label}`}><X size={13} /></button>
+              </div>
             </div>
           ))}
         </div>
@@ -788,13 +832,53 @@ function VisualizationView({ type }: { type: Exclude<CanvasType, "research_graph
     return (
       <div className="visualization timeline-view" data-canvas-type="timeline">
         {items.map((item) => (
-          <button key={item.id} className="timeline-item" onClick={() => item.sourceNodeIds?.[0] && setSelectedNodeId(item.sourceNodeIds[0])}>
-            <span className="timeline-date">{item.date}</span>
-            <span className="timeline-dot" />
-            <span><strong>{item.title}</strong>{item.description && <p>{item.description}</p>}</span>
-          </button>
+          <div className="timeline-item-wrap" key={item.id}>
+            <button className="timeline-item" onClick={() => item.sourceNodeIds?.[0] && setSelectedNodeId(item.sourceNodeIds[0])}>
+              <span className="timeline-date">{item.date}</span>
+              <span className="timeline-dot" />
+              <span><strong>{item.title}</strong>{item.description && <p>{item.description}</p>}</span>
+            </button>
+            <button className="visual-card-delete" onClick={() => removeVisualizationCard(item.id)} aria-label={`Remove visualization card ${item.title}`}><X size={13} /></button>
+          </div>
         ))}
       </div>
+    );
+  }
+
+  if (type === "image_board") {
+    const images = data.imageBoard ?? [];
+    if (!images.length) return <EmptyVisualization type="image board" />;
+    return (
+      <>
+        <div className="visualization image-board" data-canvas-type="image_board">
+          {images.map((item) => (
+            <article className="image-card" key={item.id}>
+              <button className="image-card-preview" onClick={() => setPreviewImage(item)} aria-label={`Open image ${item.title}`}>
+                <img src={item.imageUrl} alt={item.title} referrerPolicy="no-referrer" />
+              </button>
+              <div className="image-card-copy">
+                <strong>{item.title}</strong>
+                {item.note && <p>{item.note}</p>}
+                {item.sourceUrl && (
+                  <a href={item.sourceUrl} target="_blank" rel="noreferrer">
+                    {item.sourceLabel ?? "Open source"}<ArrowUpRight size={11} />
+                  </a>
+                )}
+              </div>
+              <button className="visual-card-delete" onClick={() => removeVisualizationCard(item.id)} aria-label={`Remove visualization card ${item.title}`}><X size={13} /></button>
+            </article>
+          ))}
+        </div>
+        {previewImage && (
+          <div className="image-preview-backdrop" onMouseDown={() => setPreviewImage(undefined)}>
+            <figure onMouseDown={(event) => event.stopPropagation()}>
+              <button onClick={() => setPreviewImage(undefined)} aria-label="Close image preview"><X size={17} /></button>
+              <img src={previewImage.imageUrl} alt={previewImage.title} referrerPolicy="no-referrer" />
+              <figcaption><strong>{previewImage.title}</strong>{previewImage.note && <span>{previewImage.note}</span>}</figcaption>
+            </figure>
+          </div>
+        )}
+      </>
     );
   }
 
@@ -847,7 +931,7 @@ function BranchNode({
   onSelect: (id: string) => void;
   onToggle: (id: string) => void;
 }) {
-  const { state } = useResearch();
+  const { state, removeResearchCard } = useResearch();
   const children = allNodes.filter((candidate) => candidate.parentId === node.id);
   const sources = state.document.sources.filter((source) => source.nodeId === node.id);
   const meta = branchMeta[node.type];
@@ -856,30 +940,35 @@ function BranchNode({
   return (
     <div className={`branch-node tone-${meta.tone}`}>
       <div className="branch-connector" />
-      <button className="branch-card" onClick={() => onSelect(node.id)}>
-        <div className="branch-card-top">
-          <span className="branch-kind"><Icon size={13} />{meta.label}</span>
-          <span className={`actor-badge ${node.createdBy}`}><Bot size={11} />{node.createdBy}</span>
-        </div>
-        <strong>{node.title}</strong>
-        <p>{node.summary}</p>
-        {node.gapReason && <div className="gap-reason"><Sparkles size={11} />Added because: {node.gapReason}</div>}
-        <div className="branch-card-footer">
-          <span><Link2 size={12} />{sources.length} {sources.length === 1 ? "source" : "sources"}</span>
-          {sources.slice(0, 2).map((source) => <span key={source.id} className="source-type">{source.sourceType}</span>)}
-          {children.length > 0 && (
-            <span
-              className="collapse-control"
-              onClick={(event) => {
-                event.stopPropagation();
-                onToggle(node.id);
-              }}
-            >
-              {node.isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}{children.length}
-            </span>
-          )}
-        </div>
-      </button>
+      <div className="branch-card-shell">
+        <button className="branch-card" onClick={() => onSelect(node.id)}>
+          <div className="branch-card-top">
+            <span className="branch-kind"><Icon size={13} />{meta.label}</span>
+            <span className={`actor-badge ${node.createdBy}`}><Bot size={11} />{node.createdBy}</span>
+          </div>
+          <strong>{node.title}</strong>
+          <p>{node.summary}</p>
+          {node.gapReason && <div className="gap-reason"><Sparkles size={11} />Added because: {node.gapReason}</div>}
+          <div className="branch-card-footer">
+            <span><Link2 size={12} />{sources.length} {sources.length === 1 ? "source" : "sources"}</span>
+            {sources.slice(0, 2).map((source) => <span key={source.id} className="source-type">{source.sourceType}</span>)}
+            {children.length > 0 && (
+              <span
+                className="collapse-control"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onToggle(node.id);
+                }}
+              >
+                {node.isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}{children.length}
+              </span>
+            )}
+          </div>
+        </button>
+        <button className="research-card-delete" onClick={() => removeResearchCard(node.id)} aria-label={`Remove research card ${node.title}`} title="Remove this card and its child cards">
+          <Trash2 size={13} />
+        </button>
+      </div>
       {!node.isCollapsed && children.length > 0 && (
         <div className="branch-children">
           {children.map((child) => (

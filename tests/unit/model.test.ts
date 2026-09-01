@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { addAnnotation, addAnchor, addNodes, emptyState, normalizeResearchState, redo, setCanvasView, undo } from "../../src/model";
+import {
+  addAnnotation,
+  addAnchor,
+  addNodes,
+  emptyState,
+  normalizeResearchState,
+  redo,
+  removeAnchor,
+  removeCanvasItem,
+  removeResearchNode,
+  setCanvasView,
+  undo,
+} from "../../src/model";
 
 function stateWithAnchor() {
   return addAnchor(emptyState(), {
@@ -111,5 +123,49 @@ describe("research graph model", () => {
     expect(visualized.document.canvasView.type).toBe("diagram");
     expect(undo(visualized).document.canvasView.type).toBe("research_graph");
     expect(undo(undo(visualized)).document.annotations).toHaveLength(0);
+  });
+
+  it("removes a mistaken anchor with all dependent content and restores it with Undo", () => {
+    const anchored = stateWithAnchor();
+    const explained = addAnnotation(anchored.state, {
+      anchorId: anchored.anchor.id,
+      type: "explanation",
+      content: "Explanation",
+    }, "agent");
+    const researched = addNodes(explained, anchored.anchor.id, [{
+      type: "verify",
+      title: "Verify",
+      summary: "Check it",
+      sources: [{ title: "Source", url: "https://example.com/source" }],
+    }], "Research", "agent").state;
+
+    const removed = removeAnchor(researched, anchored.anchor.id);
+    expect(removed.document.anchors).toHaveLength(0);
+    expect(removed.document.annotations).toHaveLength(0);
+    expect(removed.document.nodes).toHaveLength(0);
+    expect(removed.document.sources).toHaveLength(0);
+    expect(undo(removed).document.nodes).toHaveLength(1);
+  });
+
+  it("cascades child research-card deletion and removes image cards reversibly", () => {
+    const anchored = stateWithAnchor();
+    const researched = addNodes(anchored.state, anchored.anchor.id, [
+      { clientId: "parent", type: "background", title: "Parent", summary: "Parent" },
+      { parentId: "parent", type: "data", title: "Child", summary: "Child" },
+    ], "Research", "agent").state;
+    const withoutParent = removeResearchNode(researched, researched.document.nodes[0].id);
+    expect(withoutParent.document.nodes).toHaveLength(0);
+
+    const visualized = setCanvasView(withoutParent, {
+      type: "image_board",
+      title: "Screenshots",
+      data: { imageBoard: [
+        { id: "screen-a", title: "A", imageUrl: "https://images.example/a.png", sourceUrl: "https://example.com/a" },
+        { id: "screen-b", title: "B", imageUrl: "https://images.example/b.png" },
+      ] },
+    }, "agent");
+    const removedImage = removeCanvasItem(visualized, "screen-a");
+    expect(removedImage.document.canvasView.data.imageBoard).toHaveLength(1);
+    expect(undo(removedImage).document.canvasView.data.imageBoard).toHaveLength(2);
   });
 });

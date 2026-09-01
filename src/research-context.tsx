@@ -16,7 +16,10 @@ import {
   addSource,
   loadState,
   replaceArticle as replaceArticleInState,
+  removeAnchor as removeAnchorFromState,
   removeAnnotation as removeAnnotationFromState,
+  removeCanvasItem as removeCanvasItemFromState,
+  removeResearchNode as removeResearchNodeFromState,
   redo as redoState,
   STORAGE_KEY,
   setCanvasView as setCanvasViewInState,
@@ -78,6 +81,9 @@ interface ResearchContextValue {
   addLivingAnnotation: (input: AnnotationInput, actor: Actor) => void;
   toggleLivingAnnotation: (annotationId: string) => void;
   removeLivingAnnotation: (annotationId: string) => void;
+  removeResearchAnchor: (anchorId: string) => void;
+  removeResearchCard: (nodeId: string) => void;
+  removeVisualizationCard: (itemId: string) => void;
   changeCanvasView: (input: Partial<CanvasViewState> & Pick<CanvasViewState, "type">, actor: Actor) => void;
   undo: () => void;
   redo: () => void;
@@ -206,10 +212,36 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     flashActivity("Living Page layer removed");
   }, [flashActivity]);
 
+  const removeResearchAnchor = useCallback((anchorId: string) => {
+    const next = removeAnchorFromState(stateRef.current, anchorId);
+    stateRef.current = next;
+    setState(next);
+    setActiveAnchorId(next.document.anchors[0]?.id);
+    setSelectedNodeId(undefined);
+    setCurrentSelection((selection) => selection?.associatedAnchorId === anchorId ? undefined : selection);
+    flashActivity("Anchor and related content removed");
+  }, [flashActivity]);
+
+  const removeResearchCard = useCallback((nodeId: string) => {
+    const next = removeResearchNodeFromState(stateRef.current, nodeId);
+    stateRef.current = next;
+    setState(next);
+    setSelectedNodeId(undefined);
+    flashActivity("Research card removed");
+  }, [flashActivity]);
+
+  const removeVisualizationCard = useCallback((itemId: string) => {
+    const next = removeCanvasItemFromState(stateRef.current, itemId);
+    stateRef.current = next;
+    setState(next);
+    flashActivity("Visualization card removed");
+  }, [flashActivity]);
+
   const changeCanvasView = useCallback((input: Partial<CanvasViewState> & Pick<CanvasViewState, "type">, actor: Actor) => {
     const next = setCanvasViewInState(stateRef.current, input, actor);
     stateRef.current = next;
     setState(next);
+    if (actor === "agent") window.dispatchEvent(new CustomEvent("livingpage:open-canvas"));
     flashActivity(actor === "agent" ? "Agent transformed the canvas" : "Canvas view changed");
   }, [flashActivity]);
 
@@ -248,6 +280,9 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     addLivingAnnotation,
     toggleLivingAnnotation,
     removeLivingAnnotation,
+    removeResearchAnchor,
+    removeResearchCard,
+    removeVisualizationCard,
     changeCanvasView,
     undo,
     redo,
@@ -266,6 +301,9 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     addLivingAnnotation,
     toggleLivingAnnotation,
     removeLivingAnnotation,
+    removeResearchAnchor,
+    removeResearchCard,
+    removeVisualizationCard,
     changeCanvasView,
     undo,
     redo,

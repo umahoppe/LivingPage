@@ -404,12 +404,12 @@ export function useWebMCP(): WebMCPStatus {
       {
         name: "create_visualization",
         title: "Transform the visual canvas",
-        description: "Create the most useful Diagram, Timeline, or Comparison view from sourced research. The underlying research data remains unchanged.",
+        description: "Create the most useful Diagram, Timeline, Comparison, or Image Board from sourced research. Image Board data uses imageBoard items with id, title, imageUrl, note, sourceUrl, and sourceLabel. The underlying research data remains unchanged.",
         inputSchema: {
           type: "object",
           required: ["type", "title", "data"],
           properties: {
-            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table"] },
+            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table", "image_board"] },
             title: { type: "string", maxLength: 120 },
             sourceNodeIds: { type: "array", items: { type: "string" }, maxItems: 30 },
             layout: { type: "string", maxLength: 60 },
@@ -438,7 +438,7 @@ export function useWebMCP(): WebMCPStatus {
         inputSchema: {
           type: "object",
           properties: {
-            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table"] },
+            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table", "image_board"] },
             title: { type: "string", maxLength: 120 },
             sourceNodeIds: { type: "array", items: { type: "string" }, maxItems: 30 },
             layout: { type: "string", maxLength: 60 },

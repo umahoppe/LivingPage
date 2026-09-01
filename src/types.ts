@@ -14,7 +14,7 @@ export type Actor = "human" | "agent";
 export type LivingAnnotationType = "explanation" | "simplification" | "highlight" | "verification";
 export type HighlightType = "important" | "claim" | "data" | "evidence" | "uncertain";
 export type VerificationStatus = "supported" | "mixed" | "unsupported" | "uncertain";
-export type CanvasType = "research_graph" | "diagram" | "timeline" | "comparison_table";
+export type CanvasType = "research_graph" | "diagram" | "timeline" | "comparison_table" | "image_board";
 
 export interface ArticleBlock {
   id: string;
@@ -106,8 +106,19 @@ export interface TimelineItem {
 }
 
 export interface ComparisonRow {
+  id?: string;
   label: string;
   values: string[];
+  sourceNodeIds?: string[];
+}
+
+export interface ImageBoardItem {
+  id: string;
+  title: string;
+  imageUrl: string;
+  note?: string;
+  sourceUrl?: string;
+  sourceLabel?: string;
   sourceNodeIds?: string[];
 }
 
@@ -115,6 +126,7 @@ export interface VisualizationData {
   diagram?: { nodes: DiagramNode[]; edges: DiagramEdge[] };
   timeline?: TimelineItem[];
   comparison?: { columns: string[]; rows: ComparisonRow[] };
+  imageBoard?: ImageBoardItem[];
 }
 
 export interface CanvasViewState {

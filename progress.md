@@ -39,3 +39,13 @@ Original prompt: 添付の開発指示書を起点に、Canvasではなく閲覧
 - 検証: unit 7/7、Playwright E2E 3/3、ESLint、TypeScript、Sites production build成功。Playwright CLIの実画面で選択メニュー、Inline Layer、Diagram、Canvas close/reopenを確認し、console error 0。favicon 404も修正した。
 - 未完: Staged Agent Changes、Accept / Inspect、Profile UI、Chart / Image Board / Pros-Cons / Visual Summary、高度なDynamic Tool Availability、公開環境のWebMCPライブ呼び出し。
 - 次アクション: Challengeの実デモでは現在のGolden Pathを先に使用し、次ループでStaged ChangesとVisualization Type追加を行う。公開前にSitesへ再デプロイし、公開URL上でWebMCP登録と永続化を再検証する。
+
+## 2026-09-02 — Living Page Loop 2
+
+- 完了: ユーザー実機確認で判明した画像非表示、Anchor削除不可、Research / Visualization Card削除不可、閉じたCanvasがAgent更新で開かない問題を修正した。
+- 完了: `image_board` Canvas Type、実画像、タイトル、Note、Source link、拡大Previewを実装。Image URLとSource URLはHTTP(S)のみ許可し、Agentの`create_visualization` / `update_visualization`で生成できるようにした。
+- 完了: Article上のAnchor削除、Research Anchor削除、Research Card削除、Diagram / Timeline / Image Card削除を追加。Anchor削除は関連Inline Layer、子Research Card、SourcesへCascadeし、すべてUndo可能にした。
+- 完了: AgentがVisualizationを作成・更新したとき、ユーザーが閉じていたVisual Thinking Canvasを自動で開くようにした。Inline専用Anchorは内部参照として保持しつつ、Research Canvasには空カードを出さないようにした。
+- 検証: unit 9/9、Playwright E2E 4/4、ESLint、TypeScript、Sites production build、`git diff --check`成功。Playwright CLIでCanvas close→Agent Image Board→自動open、画像表示、拡大、個別削除、console error 0を確認した。
+- 未完: Staged Agent Changes、Profile UI、Chart / Pros-Cons / Visual Summary、高度なDynamic Tool Availability、公開環境のWebMCPライブ呼び出し。
+- 次アクション: ユーザーの通常ブラウザとWebMCP対応ブラウザでImage Boardと削除Undoを再確認し、その後Staged Changesへ進む。
