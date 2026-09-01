@@ -13,12 +13,14 @@
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "lucide-react": "latest",
-    "vite": "latest",
     "react": "latest",
-    "react-dom": "latest"
+    "react-dom": "latest",
+    "vite": "latest"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.54.2",
     "@eslint/js": "latest",
+    "@openai/sites-vite-plugin": "^0.2.0",
     "@playwright/test": "latest",
     "@testing-library/react": "latest",
     "@types/node": "latest",
@@ -31,6 +33,7 @@
     "jsdom": "latest",
     "typescript": "latest",
     "typescript-eslint": "latest",
-    "vitest": "latest"
+    "vitest": "latest",
+    "wrangler": "^4.127.1"
   }
 }
