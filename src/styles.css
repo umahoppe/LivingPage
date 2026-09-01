@@ -188,7 +188,11 @@ button { color: inherit; }
 .quick-grow > div { display: flex; gap: 5px; }
 .quick-grow button { border: 1px solid #dcddd6; background: #f8f8f4; border-radius: 7px; padding: 6px 8px; font-size: 8px; display: flex; align-items: center; gap: 4px; cursor: pointer; }
 .quick-grow button:hover { border-color: #b6c7bb; background: #eef4ef; }
-.agent-prompt-card { margin-top: 13px; border: 1px solid #cddbcf; background: #eaf1eb; border-radius: 9px; padding: 10px 11px; display: grid; grid-template-columns: 20px 1fr 16px; gap: 6px; align-items: center; color: #466552; }
+.agent-prompt-card { width: 100%; margin-top: 13px; border: 1px solid #cddbcf; background: #eaf1eb; border-radius: 9px; padding: 10px 11px; display: grid; grid-template-columns: 20px 1fr 16px; gap: 6px; align-items: center; color: #466552; text-align: left; cursor: pointer; transition: border-color .16s, background .16s, transform .16s; }
+.agent-prompt-card:hover { border-color: #9eb7a4; background: #e1ece3; transform: translateY(-1px); }
+.agent-prompt-card:focus-visible { outline: 2px solid #4f8b62; outline-offset: 2px; }
+.agent-prompt-card.copied { border-color: #78a787; background: #dfece2; }
+.agent-prompt-card.failed { border-color: #c99d92; background: #f5e9e5; color: #875249; }
 .agent-prompt-card > div { display: flex; flex-direction: column; }
 .agent-prompt-card strong { font-size: 8px; text-transform: uppercase; letter-spacing: .08em; }
 .agent-prompt-card span { font-family: Georgia, serif; font-size: 10px; margin-top: 2px; }

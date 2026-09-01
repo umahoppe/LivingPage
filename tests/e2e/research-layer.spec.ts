@@ -4,6 +4,16 @@ async function installWebMCPStub(page: Page) {
   await page.addInitScript(() => {
     const tools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> = {};
     Object.defineProperty(window, "__webmcpTools", { value: tools, configurable: true });
+    Object.defineProperty(window, "__copiedAgentRequest", { value: "", writable: true, configurable: true });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText(text: string) {
+          (window as unknown as { __copiedAgentRequest: string }).__copiedAgentRequest = text;
+          return Promise.resolve();
+        },
+      },
+    });
     Object.defineProperty(document, "modelContext", {
       configurable: true,
       value: {
@@ -23,7 +33,7 @@ test("an agent reads an anchor and grows missing research branches", async ({ pa
   });
   await installWebMCPStub(page);
   await page.goto("/");
-  await expect(page.getByText("WebMCP connected")).toBeVisible();
+  await expect(page.getByText("WebMCP tools registered")).toBeVisible();
 
   await page.locator('[data-block-id="claim-growth"]').scrollIntoViewIfNeeded();
   await page.locator('[data-block-id="claim-growth"]').evaluate((element) => {
@@ -38,6 +48,12 @@ test("an agent reads an anchor and grows missing research branches", async ({ pa
   });
   await page.getByRole("button", { name: "Grow research here" }).click();
   await expect(page.getByText("This anchor is ready", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "Copy agent request for anchor 1" }).click();
+  await expect(page.getByText("Request copied")).toBeVisible();
+  const copiedRequest = await page.evaluate(() => (window as unknown as { __copiedAgentRequest: string }).__copiedAgentRequest);
+  expect(copiedRequest).toContain("get_research_layer");
+  expect(copiedRequest).toContain("create_research_nodes");
+  expect(copiedRequest).toContain("チャット回答だけで終えず");
 
   const toolResult = await page.evaluate(async () => {
     const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
