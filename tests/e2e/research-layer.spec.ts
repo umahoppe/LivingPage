@@ -29,10 +29,12 @@ test("an agent reads an anchor and grows missing research branches", async ({ pa
   await page.locator('[data-block-id="claim-growth"]').evaluate((element) => {
     const selection = window.getSelection()!;
     const range = document.createRange();
-    range.selectNodeContents(element);
+    const text = element.firstChild!;
+    range.setStart(text, 0);
+    range.setEnd(text, 6);
     selection.removeAllRanges();
     selection.addRange(range);
-    element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    document.dispatchEvent(new Event("selectionchange"));
   });
   await page.getByRole("button", { name: "Grow research here" }).click();
   await expect(page.getByText("This anchor is ready", { exact: false })).toBeVisible();
@@ -97,6 +99,20 @@ test("an agent reads an anchor and grows missing research branches", async ({ pa
 
   await page.reload();
   await expect(page.getByText("Verify the 20% growth claim")).toBeVisible();
+
+  await page.locator('[data-block-id="questions-heading"]').scrollIntoViewIfNeeded();
+  await page.locator('[data-block-id="questions-heading"]').evaluate((element) => {
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    const text = element.firstChild!;
+    range.setStart(text, 0);
+    range.setEnd(text, 8);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.getByRole("button", { name: "Grow research here" }).click();
+  await expect(page.locator('[data-block-id="questions-heading"] [data-anchor-id]')).toHaveCount(1);
   expect(consoleErrors).toEqual([]);
 });
 
@@ -140,7 +156,7 @@ test("imports a public article and exposes its context to WebMCP", async ({ page
     range.selectNodeContents(element);
     selection.removeAllRanges();
     selection.addRange(range);
-    element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    document.dispatchEvent(new Event("selectionchange"));
   });
   await page.getByRole("button", { name: "Grow research here" }).click();
 

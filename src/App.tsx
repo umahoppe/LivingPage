@@ -20,7 +20,7 @@ import {
   Undo2,
   X,
 } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { defaultArticle } from "./article-data";
 import { useResearch, type AnchorInput } from "./research-context";
 import type { ArticleBlock, ArticleDocument, BranchType, ResearchAnchor, ResearchNode } from "./types";
@@ -41,6 +41,9 @@ interface PendingSelection extends AnchorInput {
   x: number;
   y: number;
 }
+
+const MIN_ANCHOR_CHARACTERS = 2;
+const MAX_ANCHOR_CHARACTERS = 1_200;
 
 function textOffset(container: Node, target: Node, offset: number) {
   const range = document.createRange();
@@ -66,39 +69,66 @@ function App() {
   const [pending, setPending] = useState<PendingSelection>();
   const [showImport, setShowImport] = useState(false);
   const articleRef = useRef<HTMLElement>(null);
+  const selectionTimer = useRef<number | undefined>(undefined);
   const article = state.document.article;
 
-  const handleSelection = useCallback(() => {
-    window.setTimeout(() => {
-      const selection = window.getSelection();
-      if (!selection || selection.isCollapsed || !selection.rangeCount) {
-        setPending(undefined);
-        return;
-      }
-      const quote = selection.toString().replace(/\s+/g, " ").trim();
-      if (quote.length < 8 || quote.length > 360) return;
-      const range = selection.getRangeAt(0);
-      const startElement = range.startContainer.nodeType === Node.TEXT_NODE
-        ? range.startContainer.parentElement
-        : range.startContainer as Element;
-      const block = startElement?.closest<HTMLElement>("[data-block-id]");
-      if (!block || !articleRef.current?.contains(block) || !block.contains(range.endContainer)) return;
-      const fullText = block.textContent ?? "";
-      const startOffset = textOffset(block, range.startContainer, range.startOffset);
-      const endOffset = textOffset(block, range.endContainer, range.endOffset);
-      const rect = range.getBoundingClientRect();
-      setPending({
-        blockId: block.dataset.blockId!,
-        quote,
-        prefix: fullText.slice(Math.max(0, startOffset - 48), startOffset),
-        suffix: fullText.slice(endOffset, endOffset + 48),
-        startOffset,
-        endOffset,
-        x: Math.min(window.innerWidth - 220, Math.max(16, rect.left + rect.width / 2 - 94)),
-        y: Math.min(window.innerHeight - 54, Math.max(76, rect.bottom + 10)),
-      });
-    }, 0);
+  const updatePendingSelection = useCallback(() => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !selection.rangeCount) {
+      setPending(undefined);
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    const startElement = range.startContainer.nodeType === Node.TEXT_NODE
+      ? range.startContainer.parentElement
+      : range.startContainer as Element;
+    const block = startElement?.closest<HTMLElement>("[data-block-id]");
+    if (!block || !articleRef.current?.contains(block) || !block.contains(range.endContainer)) {
+      setPending(undefined);
+      return;
+    }
+
+    const fullText = block.textContent ?? "";
+    let startOffset = textOffset(block, range.startContainer, range.startOffset);
+    let endOffset = textOffset(block, range.endContainer, range.endOffset);
+    const selectedText = fullText.slice(startOffset, endOffset);
+    startOffset += selectedText.length - selectedText.trimStart().length;
+    endOffset -= selectedText.length - selectedText.trimEnd().length;
+    const quote = fullText.slice(startOffset, endOffset).replace(/\s+/g, " ").trim();
+    if (quote.length < MIN_ANCHOR_CHARACTERS || quote.length > MAX_ANCHOR_CHARACTERS) {
+      setPending(undefined);
+      return;
+    }
+
+    const rect = range.getBoundingClientRect();
+    setPending({
+      blockId: block.dataset.blockId!,
+      quote,
+      prefix: fullText.slice(Math.max(0, startOffset - 48), startOffset),
+      suffix: fullText.slice(endOffset, endOffset + 48),
+      startOffset,
+      endOffset,
+      x: Math.min(window.innerWidth - 220, Math.max(16, rect.left + rect.width / 2 - 94)),
+      y: Math.min(window.innerHeight - 54, Math.max(76, rect.bottom + 10)),
+    });
   }, []);
+
+  useEffect(() => {
+    const scheduleSelectionUpdate = () => {
+      if (selectionTimer.current) window.clearTimeout(selectionTimer.current);
+      selectionTimer.current = window.setTimeout(updatePendingSelection, 20);
+    };
+    document.addEventListener("selectionchange", scheduleSelectionUpdate);
+    document.addEventListener("pointerup", scheduleSelectionUpdate, true);
+    document.addEventListener("keyup", scheduleSelectionUpdate, true);
+    return () => {
+      document.removeEventListener("selectionchange", scheduleSelectionUpdate);
+      document.removeEventListener("pointerup", scheduleSelectionUpdate, true);
+      document.removeEventListener("keyup", scheduleSelectionUpdate, true);
+      if (selectionTimer.current) window.clearTimeout(selectionTimer.current);
+    };
+  }, [updatePendingSelection]);
 
   const confirmAnchor = () => {
     if (!pending) return;
@@ -157,7 +187,7 @@ function App() {
       </header>
 
       <main className="workspace">
-        <article className="article-pane" data-article ref={articleRef} onMouseUp={handleSelection}>
+        <article className="article-pane" data-article ref={articleRef}>
           <div className="article-inner">
             {article.sourceUrl && (
               <a className="import-source-strip" href={article.sourceUrl} target="_blank" rel="noreferrer">
@@ -326,9 +356,8 @@ function ArticleBlockView({
   activeAnchorId?: string;
   onAnchorClick: (id: string) => void;
 }) {
-  if (block.kind === "h2") return <h2 data-block-id={block.id}>{block.text}</h2>;
+  const Tag = block.kind === "h2" ? "h2" : block.kind === "quote" ? "blockquote" : "p";
   if (!anchors.length) {
-    const Tag = block.kind === "quote" ? "blockquote" : "p";
     return <Tag data-block-id={block.id}>{block.text}</Tag>;
   }
 
@@ -354,7 +383,6 @@ function ArticleBlockView({
     cursor = anchor.endOffset;
   }
   parts.push(block.text.slice(cursor));
-  const Tag = block.kind === "quote" ? "blockquote" : "p";
   return <Tag data-block-id={block.id}>{parts}</Tag>;
 }
 

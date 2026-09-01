@@ -34,6 +34,66 @@ export const makeId = (prefix: string): string =>
 
 const snapshot = (document: ResearchDocument): ResearchDocument => structuredClone(document);
 
+function normalizedText(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function normalizeDocumentBlockIds(document: ResearchDocument): ResearchDocument {
+  const usedIds = new Set<string>();
+  const groups = new Map<string, Array<{ id: string; text: string }>>();
+  let changed = false;
+
+  const blocks = document.article.blocks.map((block, index) => {
+    const originalId = block.id || `block-${index}`;
+    let id = originalId;
+    let suffix = 2;
+    while (usedIds.has(id)) id = `${originalId}-${suffix++}`;
+    usedIds.add(id);
+    if (id !== block.id) changed = true;
+    const candidates = groups.get(originalId) ?? [];
+    candidates.push({ id, text: block.text });
+    groups.set(originalId, candidates);
+    return id === block.id ? block : { ...block, id };
+  });
+
+  const anchors = document.anchors.map((anchor) => {
+    const candidates = groups.get(anchor.blockId);
+    if (!candidates?.length) return anchor;
+    const quote = normalizedText(anchor.quote);
+    const prefix = normalizedText(anchor.prefix);
+    const suffix = normalizedText(anchor.suffix);
+    const ranked = [...candidates].sort((left, right) => {
+      const score = (candidate: { text: string }) => {
+        const selected = normalizedText(candidate.text.slice(anchor.startOffset, anchor.endOffset));
+        let value = selected === quote ? 1_000 : candidate.text.includes(anchor.quote) ? 100 : 0;
+        if (prefix && normalizedText(candidate.text.slice(Math.max(0, anchor.startOffset - anchor.prefix.length), anchor.startOffset)) === prefix) value += 200;
+        if (suffix && normalizedText(candidate.text.slice(anchor.endOffset, anchor.endOffset + anchor.suffix.length)) === suffix) value += 200;
+        return value;
+      };
+      return score(right) - score(left) || left.text.length - right.text.length;
+    });
+    const blockId = ranked[0].id;
+    if (blockId === anchor.blockId) return anchor;
+    changed = true;
+    return { ...anchor, blockId };
+  });
+
+  if (!changed) return document;
+  return {
+    ...document,
+    article: { ...document.article, blocks },
+    anchors,
+  };
+}
+
+export function normalizeResearchState(state: ResearchState): ResearchState {
+  return {
+    document: normalizeDocumentBlockIds(state.document),
+    undoStack: state.undoStack.map((entry) => ({ ...entry, document: normalizeDocumentBlockIds(entry.document) })),
+    redoStack: state.redoStack.map((entry) => ({ ...entry, document: normalizeDocumentBlockIds(entry.document) })),
+  };
+}
+
 export function commitDocument(
   state: ResearchState,
   nextDocument: ResearchDocument,
@@ -76,14 +136,14 @@ export function addAnchor(
 }
 
 export function replaceArticle(state: ResearchState, article: ArticleDocument): ResearchState {
-  const next: ResearchDocument = {
+  const next = normalizeDocumentBlockIds({
     version: 2,
     revision: state.document.revision,
     article: structuredClone(article),
     anchors: [],
     nodes: [],
     sources: [],
-  };
+  });
   return commitDocument(state, next, `Imported article: ${article.title}`, "human");
 }
 
@@ -223,17 +283,17 @@ export function loadState(): ResearchState {
     const storedVersion = (parsed.document as unknown as { version?: number } | undefined)?.version;
     if (storedVersion === 1) {
       const legacyDocument = parsed.document as unknown as Omit<ResearchDocument, "version" | "article">;
-      return {
+      return normalizeResearchState({
         ...parsed,
         document: {
           ...legacyDocument,
           version: 2,
           article: structuredClone(defaultArticle),
         },
-      };
+      });
     }
     if (storedVersion !== 2 || !parsed.document.article) return emptyState();
-    return parsed;
+    return normalizeResearchState(parsed);
   } catch {
     return emptyState();
   }

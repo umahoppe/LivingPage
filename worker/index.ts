@@ -118,7 +118,7 @@ export async function extractArticle(html: string, sourceUrl: URL): Promise<Arti
   }).parse();
   if (!parsed?.content || !parsed.textContent) throw new ImportError("We could not identify a readable article on this page.", 422);
 
-  const blocks = extractBlocks(parsed.content);
+  let blocks = extractBlocks(parsed.content);
   if (blocks.length < 2) {
     const fallback = parsed.textContent
       .split(/\n{2,}/)
@@ -126,7 +126,7 @@ export async function extractArticle(html: string, sourceUrl: URL): Promise<Arti
       .filter((text) => text.length >= 35 && text.length <= 1_800)
       .slice(0, 80)
       .map((text, index) => ({ id: `imported-${index}`, kind: "p" as const, text }));
-    blocks.push(...fallback);
+    if (fallback.length >= 2) blocks = fallback;
   }
   if (blocks.length < 2) throw new ImportError("The page did not contain enough readable article text.", 422);
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addAnchor, addNodes, emptyState, redo, undo } from "../../src/model";
+import { addAnchor, addNodes, emptyState, normalizeResearchState, redo, undo } from "../../src/model";
 
 function stateWithAnchor() {
   return addAnchor(emptyState(), {
@@ -63,5 +63,27 @@ describe("research graph model", () => {
     const restored = redo(undone);
     expect(restored.document.nodes).toHaveLength(1);
     expect(restored.document.nodes[0].title).toBe("Regional decline");
+  });
+
+  it("repairs duplicate imported block IDs and keeps an anchor on the best matching block", () => {
+    const state = emptyState();
+    state.document.article.blocks = [
+      { id: "imported-0", kind: "p", text: "Short claim followed by a much longer flattened copy of the full article." },
+      { id: "imported-0", kind: "p", text: "Short claim" },
+    ];
+    state.document.anchors = [{
+      id: "anchor-existing",
+      blockId: "imported-0",
+      quote: "Short claim",
+      prefix: "",
+      suffix: "",
+      startOffset: 0,
+      endOffset: 11,
+      createdAt: "2026-09-01T00:00:00.000Z",
+    }];
+
+    const normalized = normalizeResearchState(state);
+    expect(normalized.document.article.blocks.map((block) => block.id)).toEqual(["imported-0", "imported-0-2"]);
+    expect(normalized.document.anchors[0].blockId).toBe("imported-0-2");
   });
 });

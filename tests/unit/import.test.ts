@@ -32,8 +32,20 @@ describe("article import", () => {
     expect(article.siteName).toBe("Evidence Journal");
     expect(article.heroImageUrl).toBe("https://journal.example/hero.jpg");
     expect(article.blocks.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(article.blocks.map((block) => block.id)).size).toBe(article.blocks.length);
     expect(article.blocks.some((block) => block.kind === "h2")).toBe(true);
     expect(article.blocks.map((block) => block.text).join(" ")).not.toContain("window.evil");
+  });
+
+  it("replaces a single flattened block with uniquely identified fallback paragraphs", async () => {
+    const flattenedFixture = `<!doctype html><html><head><title>Flattened article</title></head><body><article>
+      <h1>Flattened article</h1>
+      <p>The first paragraph contains a focused claim with enough detail to be useful for research and verification.\n\nThe second paragraph provides a separate explanation with enough context to remain a distinct research anchor in the imported article.</p>
+    </article></body></html>`;
+    const article = await extractArticle(flattenedFixture, new URL("https://journal.example/flattened"));
+
+    expect(article.blocks).toHaveLength(2);
+    expect(article.blocks.map((block) => block.id)).toEqual(["imported-0", "imported-1"]);
   });
 
   it("rejects local and non-HTTP destinations", () => {
