@@ -67,6 +67,9 @@ function getPageContext() {
   return {
     pageTitle: document.title,
     pageUrl: location.href,
+    articleId: state?.document.article.id,
+    articleSourceUrl: state?.document.article.sourceUrl,
+    articleSiteName: state?.document.article.siteName,
     articleTitle: article?.querySelector("h1")?.textContent?.trim(),
     articleContent: article?.textContent?.replace(/\s+/g, " ").trim().slice(0, 5000),
     selectedText: selection && !selection.isCollapsed ? selection.toString().trim() : "",

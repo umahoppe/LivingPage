@@ -1,5 +1,6 @@
 import type {
   Actor,
+  ArticleDocument,
   HistoryEntry,
   NodeInput,
   ResearchAnchor,
@@ -9,12 +10,14 @@ import type {
   ResearchState,
   SourceInput,
 } from "./types";
+import { defaultArticle } from "./article-data";
 
 export const STORAGE_KEY = "research-garden:v1";
 
 export const emptyDocument = (): ResearchDocument => ({
-  version: 1,
+  version: 2,
   revision: 0,
+  article: structuredClone(defaultArticle),
   anchors: [],
   nodes: [],
   sources: [],
@@ -70,6 +73,18 @@ export function addAnchor(
     anchors: [...state.document.anchors, created],
   };
   return { state: commitDocument(state, next, "Created a research anchor", "human"), anchor: created };
+}
+
+export function replaceArticle(state: ResearchState, article: ArticleDocument): ResearchState {
+  const next: ResearchDocument = {
+    version: 2,
+    revision: state.document.revision,
+    article: structuredClone(article),
+    anchors: [],
+    nodes: [],
+    sources: [],
+  };
+  return commitDocument(state, next, `Imported article: ${article.title}`, "human");
 }
 
 function sourceFromInput(nodeId: string, input: SourceInput): ResearchSource {
@@ -204,8 +219,20 @@ export function loadState(): ResearchState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return emptyState();
-    const parsed = JSON.parse(raw) as ResearchState;
-    if (parsed.document?.version !== 1) return emptyState();
+    const parsed = JSON.parse(raw) as unknown as ResearchState;
+    const storedVersion = (parsed.document as unknown as { version?: number } | undefined)?.version;
+    if (storedVersion === 1) {
+      const legacyDocument = parsed.document as unknown as Omit<ResearchDocument, "version" | "article">;
+      return {
+        ...parsed,
+        document: {
+          ...legacyDocument,
+          version: 2,
+          article: structuredClone(defaultArticle),
+        },
+      };
+    }
+    if (storedVersion !== 2 || !parsed.document.article) return emptyState();
     return parsed;
   } catch {
     return emptyState();

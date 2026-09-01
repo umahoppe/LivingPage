@@ -11,6 +11,25 @@ export type BranchType =
 export type ContentType = "text" | "webpage" | "image" | "pdf" | "table";
 export type Actor = "human" | "agent";
 
+export interface ArticleBlock {
+  id: string;
+  kind: "p" | "h2" | "quote";
+  text: string;
+}
+
+export interface ArticleDocument {
+  id: string;
+  title: string;
+  deck: string;
+  author: string;
+  publishedAt?: string;
+  sourceUrl?: string;
+  siteName: string;
+  heroImageUrl?: string;
+  importedAt?: string;
+  blocks: ArticleBlock[];
+}
+
 export interface ResearchAnchor {
   id: string;
   blockId: string;
@@ -51,8 +70,9 @@ export interface ResearchNode {
 }
 
 export interface ResearchDocument {
-  version: 1;
+  version: 2;
   revision: number;
+  article: ArticleDocument;
   anchors: ResearchAnchor[];
   nodes: ResearchNode[];
   sources: ResearchSource[];

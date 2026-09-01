@@ -21,3 +21,11 @@ Original prompt: 添付の開発指示書を起点に、Canvasではなく閲覧
 - 検証: unit 2/2、Playwright E2E 1/1、ESLint警告・エラー0、TypeScript/Vite production build成功、`git diff --check`成功、ブラウザconsole error 0。
 - 未完: ChatGPT in-app browser等の実WebMCPクライアントからの外部呼び出し、公開デプロイ、公開YouTubeデモ、Devpost提出。
 - 次アクション: WebMCP対応ブラウザでライブツールを呼び、公開URLへデプロイしてChallenge提出素材を作る。
+
+## 2026-09-01 — Loop 4
+
+- 完了: Sites Workerへ`POST /api/import`を追加。公開HTMLをReadabilityでArticleDocumentへ変換し、URL入力UIから現在記事を切替可能にした。記事切替はResearch Layerを分離し、操作履歴からUndo可能。WebMCP contextに原典URL・記事ID・サイト名を追加。
+- 安全性: localhost、private IPv4、local/internal host、資格情報付きURL、非標準port、非HTTP、非HTML、2MB超過、過剰Redirectを拒否。取得HTMLは構造化プレーンテキストへ変換し、Script/Form/Embedを描画しない。
+- 検証: unit 4/4、Playwright E2E 2/2、ESLint成功、Sites production build成功。実ネットワークでWikipedia記事80 blocksを抽出し、private URL拒否HTTP 400を確認。
+- 未完: 既存Sitesへの新版公開とデプロイ後確認。
+- 次アクション: 正確に検証済みsourceを保存し、既存Sitesへ公開する。

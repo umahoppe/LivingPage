@@ -4,13 +4,16 @@
 
 Research Garden is an agent-native research layer that grows directly from the text a person is reading. A human selects a claim; an agent reads the current page and its existing research structure through WebMCP, decides what evidence or perspective is missing, and writes new branches back into the same visible workspace.
 
+Public HTML articles can be imported by URL. The Sites Worker extracts readable headings, paragraphs, quotes, authorship, publication metadata, and a representative image into same-origin structured content. Scripts, forms, embeds, local-network targets, non-HTML resources, and oversized responses are rejected.
+
 ## Core interaction
 
-1. Select a sentence in the demo article.
-2. Choose **Grow research here** to create a durable text anchor.
-3. Ask a WebMCP-capable agent: “What is missing from the research around this claim?”
-4. The agent calls `get_research_layer`, analyzes the current branches, and calls `create_research_nodes` with evidence, causes, and counterpoints.
-5. Review sources in place or undo the complete agent operation in one step.
+1. Import a public article URL, or use the built-in demo article.
+2. Select a sentence in the article.
+3. Choose **Grow research here** to create a durable text anchor.
+4. Ask a WebMCP-capable agent: “What is missing from the research around this claim?”
+5. The agent calls `get_research_layer`, analyzes the current branches, and calls `create_research_nodes` with evidence, causes, and counterpoints.
+6. Review sources in place or undo the complete agent operation in one step.
 
 ## WebMCP tools
 
@@ -38,6 +41,8 @@ npm run build
 ```
 
 The end-to-end test injects a browser-side WebMCP host, executes the actual registered tools, verifies visible branch creation, source provenance, grouped Undo/Redo, persistence after reload, and browser console health.
+
+The import tests verify URL safety checks, readable-content extraction, imported article persistence, and WebMCP context for the imported source.
 
 ## Browser support
 

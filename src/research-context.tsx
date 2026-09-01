@@ -14,6 +14,7 @@ import {
   addNodes,
   addSource,
   loadState,
+  replaceArticle as replaceArticleInState,
   redo as redoState,
   STORAGE_KEY,
   toggleNode,
@@ -21,6 +22,7 @@ import {
 } from "./model";
 import type {
   Actor,
+  ArticleDocument,
   BranchType,
   NodeInput,
   ResearchAnchor,
@@ -55,6 +57,7 @@ interface ResearchContextValue {
   setActiveAnchorId: (id: string) => void;
   setSelectedNodeId: (id?: string) => void;
   createAnchor: (input: AnchorInput) => ResearchAnchor;
+  replaceArticle: (article: ArticleDocument) => void;
   createNodes: (command: CreateNodesCommand, actor: Actor) => ResearchNode[];
   addSourceToNode: (nodeId: string, source: SourceInput, actor: Actor) => void;
   addQuickBranch: (anchorId: string, type: BranchType) => void;
@@ -110,6 +113,15 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     setActiveAnchorId(result.anchor.id);
     flashActivity("Research anchor added");
     return result.anchor;
+  }, [flashActivity]);
+
+  const replaceArticle = useCallback((article: ArticleDocument) => {
+    const next = replaceArticleInState(stateRef.current, article);
+    stateRef.current = next;
+    setState(next);
+    setActiveAnchorId(undefined);
+    setSelectedNodeId(undefined);
+    flashActivity("Article imported into the garden");
   }, [flashActivity]);
 
   const createNodes = useCallback((command: CreateNodesCommand, actor: Actor) => {
@@ -175,6 +187,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     setActiveAnchorId,
     setSelectedNodeId,
     createAnchor,
+    replaceArticle,
     createNodes,
     addSourceToNode,
     addQuickBranch,
@@ -187,6 +200,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     selectedNode,
     activity,
     createAnchor,
+    replaceArticle,
     createNodes,
     addSourceToNode,
     addQuickBranch,

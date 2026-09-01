@@ -5,8 +5,4 @@ import { sites } from "@openai/sites-vite-plugin";
 
 export default defineConfig({
   plugins: [react(), sites(), cloudflare({ viteEnvironment: { name: "server" } })],
-  test: {
-    environment: "jsdom",
-    include: ["tests/unit/**/*.test.ts"],
-  },
 });

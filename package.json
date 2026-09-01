@@ -7,11 +7,13 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "vitest run --config vitest.config.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
     "@vitejs/plugin-react": "latest",
+    "linkedom": "^0.18.13",
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",

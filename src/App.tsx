@@ -8,8 +8,10 @@ import {
   FileSearch,
   Flower2,
   GitBranch,
+  Globe2,
   History,
   Link2,
+  LoaderCircle,
   Quote,
   Redo2,
   Search,
@@ -19,48 +21,10 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
+import { defaultArticle } from "./article-data";
 import { useResearch, type AnchorInput } from "./research-context";
-import type { BranchType, ResearchAnchor, ResearchNode } from "./types";
+import type { ArticleBlock, ArticleDocument, BranchType, ResearchAnchor, ResearchNode } from "./types";
 import { useWebMCP } from "./webmcp";
-
-interface ArticleBlock {
-  id: string;
-  kind: "p" | "h2" | "quote";
-  text: string;
-}
-
-const articleBlocks: ArticleBlock[] = [
-  {
-    id: "opening",
-    kind: "p",
-    text: "The electric vehicle market has entered a more complicated phase. Global adoption continues to rise, but headline numbers can hide sharp differences between regions, price segments, and policy environments.",
-  },
-  {
-    id: "claim-growth",
-    kind: "quote",
-    text: "Global EV sales increased by 20% year over year, suggesting the transition has regained momentum.",
-  },
-  {
-    id: "market-context",
-    kind: "p",
-    text: "Lower battery costs, expanding model choice, and purchase incentives are frequently cited as the main drivers. Yet each explanation depends on where the boundary is drawn and which vehicles are counted.",
-  },
-  {
-    id: "regional-gap",
-    kind: "p",
-    text: "Growth is not evenly distributed. Some markets accelerated after new subsidies, while others slowed as incentives expired and charging infrastructure lagged behind demand.",
-  },
-  {
-    id: "questions-heading",
-    kind: "h2",
-    text: "A number is not yet an explanation",
-  },
-  {
-    id: "research-need",
-    kind: "p",
-    text: "A useful reading of the market must connect the claim to primary data, explain the mechanism behind the change, and preserve credible counterpoints. Otherwise, a precise-looking statistic can create more confidence than understanding.",
-  },
-];
 
 const branchMeta: Record<BranchType, { label: string; icon: typeof Search; tone: string }> = {
   verify: { label: "Verify", icon: ShieldCheck, tone: "blue" },
@@ -95,11 +59,14 @@ function App() {
     setActiveAnchorId,
     setSelectedNodeId,
     createAnchor,
+    replaceArticle,
     undo,
     redo,
   } = useResearch();
   const [pending, setPending] = useState<PendingSelection>();
+  const [showImport, setShowImport] = useState(false);
   const articleRef = useRef<HTMLElement>(null);
+  const article = state.document.article;
 
   const handleSelection = useCallback(() => {
     window.setTimeout(() => {
@@ -147,6 +114,12 @@ function App() {
     window.getSelection()?.removeAllRanges();
   };
 
+  const setImportedArticle = (nextArticle: ArticleDocument) => {
+    replaceArticle(nextArticle);
+    setShowImport(false);
+    articleRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   const statusCopy = {
     ready: "WebMCP connected",
     checking: "Checking WebMCP",
@@ -165,6 +138,9 @@ function App() {
           </div>
         </div>
         <div className="toolbar">
+          <button className="import-button" onClick={() => setShowImport(true)}>
+            <Globe2 size={14} /> Import article
+          </button>
           <div className={`connection-status ${webMCPStatus}`}>
             <span className="status-dot" />
             {statusCopy}
@@ -183,24 +159,39 @@ function App() {
       <main className="workspace">
         <article className="article-pane" data-article ref={articleRef} onMouseUp={handleSelection}>
           <div className="article-inner">
-            <div className="article-kicker">MOBILITY · MARKET SIGNALS</div>
-            <h1>Is the electric vehicle transition accelerating again?</h1>
+            {article.sourceUrl && (
+              <a className="import-source-strip" href={article.sourceUrl} target="_blank" rel="noreferrer">
+                <Globe2 size={13} /> Imported from {article.siteName}<ArrowUpRight size={12} />
+              </a>
+            )}
+            <div className="article-kicker">{article.siteName}</div>
+            <h1>{article.title}</h1>
             <p className="article-deck">
-              One optimistic number can carry several different stories. Select a claim to grow its evidence, causes, and counterpoints.
+              {article.deck}
             </p>
             <div className="byline-row">
-              <div className="author-avatar">RG</div>
-              <div><strong>Research Garden Briefing</strong><span>September 1, 2026 · 6 min read</span></div>
+              <div className="author-avatar">{article.author.slice(0, 2).toUpperCase()}</div>
+              <div>
+                <strong>{article.author}</strong>
+                <span>{article.publishedAt ? formatDate(article.publishedAt) : "Publication date unavailable"} · {Math.max(1, Math.round(article.blocks.reduce((sum, block) => sum + block.text.split(/\s+/).length, 0) / 220))} min read</span>
+              </div>
             </div>
-            <div className="hero-visual" aria-label="Abstract electric mobility data illustration">
-              <div className="hero-grid" />
-              <div className="hero-orbit orbit-one" />
-              <div className="hero-orbit orbit-two" />
-              <div className="hero-stat"><strong>20%</strong><span>CLAIM TO INVESTIGATE</span></div>
-              <div className="hero-caption">A signal is the beginning of research, not the conclusion.</div>
-            </div>
+            {article.heroImageUrl ? (
+              <div className="imported-hero">
+                <img src={article.heroImageUrl} alt="" referrerPolicy="no-referrer" />
+                <span>Original article image · {article.siteName}</span>
+              </div>
+            ) : (
+              <div className="hero-visual" aria-label="Abstract electric mobility data illustration">
+                <div className="hero-grid" />
+                <div className="hero-orbit orbit-one" />
+                <div className="hero-orbit orbit-two" />
+                <div className="hero-stat"><strong>20%</strong><span>CLAIM TO INVESTIGATE</span></div>
+                <div className="hero-caption">A signal is the beginning of research, not the conclusion.</div>
+              </div>
+            )}
             <div className="article-body">
-              {articleBlocks.map((block) => (
+              {article.blocks.map((block) => (
                 <ArticleBlockView
                   key={block.id}
                   block={block}
@@ -230,6 +221,96 @@ function App() {
 
       {activity && <div className="activity-toast"><Check size={15} />{activity}</div>}
       {selectedNode && <NodeDetail node={selectedNode} onClose={() => setSelectedNodeId(undefined)} />}
+      {showImport && (
+        <ArticleImportDialog
+          currentArticle={article}
+          onImported={setImportedArticle}
+          onClose={() => setShowImport(false)}
+          onRestoreDemo={() => setImportedArticle(defaultArticle)}
+        />
+      )}
+    </div>
+  );
+}
+
+function formatDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("en", { year: "numeric", month: "long", day: "numeric" }).format(date);
+}
+
+function ArticleImportDialog({
+  currentArticle,
+  onImported,
+  onClose,
+  onRestoreDemo,
+}: {
+  currentArticle: ArticleDocument;
+  onImported: (article: ArticleDocument) => void;
+  onClose: () => void;
+  onRestoreDemo: () => void;
+}) {
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState<string>();
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setError(undefined);
+    setLoading(true);
+    try {
+      const response = await fetch("/api/import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const payload = await response.json() as { article?: ArticleDocument; error?: string };
+      if (!response.ok || !payload.article) throw new Error(payload.error || "The article could not be imported.");
+      onImported(payload.article);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The article could not be imported.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="import-backdrop" onMouseDown={onClose}>
+      <section className="import-dialog" role="dialog" aria-modal="true" aria-labelledby="import-title" onMouseDown={(event) => event.stopPropagation()}>
+        <button className="detail-close" onClick={onClose} aria-label="Close import"><X size={17} /></button>
+        <div className="import-icon"><Globe2 size={20} /></div>
+        <div className="eyebrow">ARTICLE IMPORT</div>
+        <h2 id="import-title">Bring a public article into the garden</h2>
+        <p>We extract readable text and source metadata. Scripts, ads, forms, and embedded trackers are not imported.</p>
+        <form onSubmit={submit}>
+          <label htmlFor="article-url">Public article URL</label>
+          <div className="url-field">
+            <Globe2 size={15} />
+            <input
+              id="article-url"
+              type="url"
+              required
+              autoFocus
+              placeholder="https://example.com/article"
+              value={url}
+              onChange={(event) => setUrl(event.target.value)}
+            />
+          </div>
+          {error && <div className="import-error" role="alert">{error}</div>}
+          <button className="import-submit" type="submit" disabled={loading}>
+            {loading ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}
+            {loading ? "Importing article…" : "Import article"}
+          </button>
+        </form>
+        <div className="import-notes">
+          <span><Check size={12} />Public HTML articles</span>
+          <span><X size={12} />Paywalls and sign-in pages</span>
+          <span><X size={12} />Local or private network URLs</span>
+        </div>
+        {currentArticle.id !== defaultArticle.id && (
+          <button className="restore-demo" onClick={onRestoreDemo}>Restore the original demo article</button>
+        )}
+      </section>
     </div>
   );
 }

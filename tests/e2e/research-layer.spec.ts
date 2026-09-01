@@ -99,3 +99,61 @@ test("an agent reads an anchor and grows missing research branches", async ({ pa
   await expect(page.getByText("Verify the 20% growth claim")).toBeVisible();
   expect(consoleErrors).toEqual([]);
 });
+
+test("imports a public article and exposes its context to WebMCP", async ({ page }) => {
+  await installWebMCPStub(page);
+  await page.route("**/api/import", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        article: {
+          id: "article_imported_test",
+          title: "Cities rethink the curb",
+          deck: "A public street can support deliveries, buses, bikes, trees, and places to meet—but not all at once.",
+          author: "Mina Ortega",
+          publishedAt: "2026-08-31T12:00:00Z",
+          sourceUrl: "https://city.example/stories/curb",
+          siteName: "City Systems Review",
+          importedAt: "2026-09-01T00:00:00Z",
+          blocks: [
+            { id: "imported-0", kind: "p", text: "Cities are redesigning curb space as delivery traffic, bus lanes, cycling networks, and public seating compete for a narrow strip of street." },
+            { id: "imported-1", kind: "quote", text: "A pilot program reduced double parking by 18 percent during weekday delivery hours." },
+            { id: "imported-2", kind: "p", text: "The result still needs comparison with nearby streets, enforcement changes, and seasonal traffic before it can support a broader policy claim." },
+          ],
+        },
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Import article", exact: true }).first().click();
+  await page.getByLabel("Public article URL").fill("https://city.example/stories/curb");
+  await page.getByRole("button", { name: "Import article", exact: true }).last().click();
+
+  await expect(page.getByRole("heading", { name: "Cities rethink the curb" })).toBeVisible();
+  await expect(page.getByText("Imported from City Systems Review")).toBeVisible();
+  await page.locator('[data-block-id="imported-1"]').scrollIntoViewIfNeeded();
+  await page.locator('[data-block-id="imported-1"]').evaluate((element) => {
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  });
+  await page.getByRole("button", { name: "Grow research here" }).click();
+
+  const context = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const result = await tools.get_page_context.execute({});
+    return JSON.parse(result.content[0].text) as { articleTitle: string; articleSourceUrl: string; anchors: unknown[] };
+  });
+  expect(context.articleTitle).toBe("Cities rethink the curb");
+  expect(context.articleSourceUrl).toBe("https://city.example/stories/curb");
+  expect(context.anchors).toHaveLength(1);
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Cities rethink the curb" })).toBeVisible();
+  await expect(page.locator("[data-anchor-id]")).toHaveCount(1);
+});
