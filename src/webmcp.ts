@@ -1,5 +1,15 @@
 import { useEffect, useState } from "react";
-import type { NodeInput, ResearchState, SourceInput } from "./types";
+import type {
+  AnnotationInput,
+  CanvasType,
+  CanvasViewState,
+  HighlightType,
+  NodeInput,
+  ResearchState,
+  SourceInput,
+  VerificationStatus,
+  VisualizationData,
+} from "./types";
 
 type WebMCPStatus = "checking" | "ready" | "unavailable" | "error";
 
@@ -75,6 +85,47 @@ function getPageContext() {
     selectedText: selection && !selection.isCollapsed ? selection.toString().trim() : "",
     anchors: state?.document.anchors.map(({ id, blockId, quote }) => ({ id, blockId, quote })) ?? [],
     graphRevision: state?.document.revision ?? 0,
+    canvasType: state?.document.canvasView.type,
+    annotationCount: state?.document.annotations.length ?? 0,
+  };
+}
+
+function getCurrentSelection() {
+  const bridge = requireBridge();
+  const selection = bridge.getSelection();
+  if (!selection) return { selectionType: null, selectedText: "", associatedAnchorId: null };
+  return {
+    selectionType: selection.selectionType,
+    selectedText: selection.quote,
+    selectedElement: selection.blockId,
+    surroundingContext: `${selection.prefix}${selection.quote}${selection.suffix}`,
+    position: { startOffset: selection.startOffset, endOffset: selection.endOffset },
+    associatedAnchorId: selection.associatedAnchorId ?? null,
+  };
+}
+
+function getVisiblePageContext() {
+  const bridge = requireBridge();
+  const state = bridge.getState();
+  const articlePane = document.querySelector<HTMLElement>("[data-article]");
+  const visibleBlocks = [...document.querySelectorAll<HTMLElement>("[data-block-id]")]
+    .filter((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.bottom >= 64 && rect.top <= window.innerHeight;
+    })
+    .map((element) => element.textContent?.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join(" ")
+    .slice(0, 3200);
+  return {
+    currentSection: articlePane?.querySelector("h1")?.textContent?.trim() ?? state.document.article.title,
+    visibleText: visibleBlocks,
+    activeExplanations: state.document.annotations.filter((item) => !item.isCollapsed),
+    highlights: state.document.annotations.filter((item) => item.type === "highlight"),
+    focusedResearchNodeIds: state.document.canvasView.focusedNodeIds,
+    openPreview: Boolean(document.querySelector(".detail-panel")),
+    canvasType: state.document.canvasView.type,
+    revision: state.document.revision,
   };
 }
 
@@ -113,6 +164,30 @@ export function useWebMCP(): WebMCPStatus {
         },
         annotations: { readOnlyHint: true, untrustedContentHint: true },
         execute: async ({ anchorId }) => toolResult(compactLayer(requireBridge().getState(), anchorId as string | undefined)),
+      },
+      {
+        name: "get_current_selection",
+        title: "Read current selection",
+        description: "Read the text selection the person is currently working with, including its durable article anchor when available.",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        execute: async () => toolResult(getCurrentSelection()),
+      },
+      {
+        name: "get_visible_page_context",
+        title: "Read visible Living Page state",
+        description: "Read the visible article context, inline layers, focus, preview, and current canvas view before changing the experience.",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        execute: async () => toolResult(getVisiblePageContext()),
+      },
+      {
+        name: "get_canvas_state",
+        title: "Read visual canvas",
+        description: "Read the current Visual Thinking Canvas independently from the underlying research nodes and sources.",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        execute: async () => toolResult(requireBridge().getState().document.canvasView),
       },
       {
         name: "create_research_nodes",
@@ -203,6 +278,186 @@ export function useWebMCP(): WebMCPStatus {
         execute: async ({ nodeId, ...source }) => {
           requireBridge().addSource(nodeId as string, source as unknown as SourceInput);
           return toolResult({ ok: true, nodeId });
+        },
+      },
+      {
+        name: "insert_inline_explanation",
+        title: "Explain beside the text",
+        description: "Insert a concise explanation directly beside an anchored article selection. Prefer this over returning a long chat answer.",
+        inputSchema: {
+          type: "object",
+          required: ["anchorId", "explanation"],
+          properties: {
+            anchorId: { type: "string" },
+            title: { type: "string", maxLength: 100 },
+            explanation: { type: "string", maxLength: 1200 },
+            level: { type: "string", maxLength: 60 },
+            relatedNodeIds: { type: "array", items: { type: "string" }, maxItems: 12 },
+          },
+          additionalProperties: false,
+        },
+        execute: async (input) => {
+          requireBridge().addAnnotation({
+            anchorId: input.anchorId as string,
+            type: "explanation",
+            title: input.title as string | undefined,
+            content: input.explanation as string,
+            level: input.level as string | undefined,
+            relatedNodeIds: input.relatedNodeIds as string[] | undefined,
+          });
+          return toolResult({ ok: true, anchorId: input.anchorId });
+        },
+      },
+      {
+        name: "insert_simplified_layer",
+        title: "Simplify beside the original",
+        description: "Add a reversible simplified version below an anchored passage without overwriting the original text.",
+        inputSchema: {
+          type: "object",
+          required: ["anchorId", "simplifiedText"],
+          properties: {
+            anchorId: { type: "string" },
+            title: { type: "string", maxLength: 100 },
+            simplifiedText: { type: "string", maxLength: 1200 },
+            level: { type: "string", maxLength: 60 },
+            relatedNodeIds: { type: "array", items: { type: "string" }, maxItems: 12 },
+          },
+          additionalProperties: false,
+        },
+        execute: async (input) => {
+          requireBridge().addAnnotation({
+            anchorId: input.anchorId as string,
+            type: "simplification",
+            title: input.title as string | undefined,
+            content: input.simplifiedText as string,
+            level: input.level as string | undefined,
+            relatedNodeIds: input.relatedNodeIds as string[] | undefined,
+          });
+          return toolResult({ ok: true, anchorId: input.anchorId });
+        },
+      },
+      {
+        name: "add_highlight",
+        title: "Highlight meaning in the article",
+        description: "Apply one restrained semantic highlight to an anchored passage and optionally explain why it matters.",
+        inputSchema: {
+          type: "object",
+          required: ["anchorId", "highlightType"],
+          properties: {
+            anchorId: { type: "string" },
+            highlightType: { type: "string", enum: ["important", "claim", "data", "evidence", "uncertain"] },
+            reason: { type: "string", maxLength: 240 },
+          },
+          additionalProperties: false,
+        },
+        execute: async (input) => {
+          requireBridge().addAnnotation({
+            anchorId: input.anchorId as string,
+            type: "highlight",
+            highlightType: input.highlightType as HighlightType,
+            reason: input.reason as string | undefined,
+          });
+          return toolResult({ ok: true, anchorId: input.anchorId });
+        },
+      },
+      {
+        name: "add_verification",
+        title: "Add source-based verification",
+        description: "Attach a cautious, source-based verification state beside an anchored claim. Use mixed or uncertain when evidence is incomplete.",
+        inputSchema: {
+          type: "object",
+          required: ["anchorId", "status", "summary"],
+          properties: {
+            anchorId: { type: "string" },
+            status: { type: "string", enum: ["supported", "mixed", "unsupported", "uncertain"] },
+            summary: { type: "string", maxLength: 1200 },
+            sources: {
+              type: "array",
+              maxItems: 8,
+              items: {
+                type: "object",
+                required: ["title", "url"],
+                properties: {
+                  title: { type: "string" },
+                  url: { type: "string" },
+                  publisher: { type: "string" },
+                  sourceType: { type: "string", enum: ["primary", "official", "academic", "news", "community", "secondary", "other"] },
+                },
+              },
+            },
+            relatedNodeIds: { type: "array", items: { type: "string" }, maxItems: 12 },
+          },
+          additionalProperties: false,
+        },
+        execute: async (input) => {
+          requireBridge().addAnnotation({
+            anchorId: input.anchorId as string,
+            type: "verification",
+            status: input.status as VerificationStatus,
+            content: input.summary as string,
+            sources: input.sources as AnnotationInput["sources"],
+            relatedNodeIds: input.relatedNodeIds as string[] | undefined,
+          });
+          return toolResult({ ok: true, anchorId: input.anchorId });
+        },
+      },
+      {
+        name: "create_visualization",
+        title: "Transform the visual canvas",
+        description: "Create the most useful Diagram, Timeline, or Comparison view from sourced research. The underlying research data remains unchanged.",
+        inputSchema: {
+          type: "object",
+          required: ["type", "title", "data"],
+          properties: {
+            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table"] },
+            title: { type: "string", maxLength: 120 },
+            sourceNodeIds: { type: "array", items: { type: "string" }, maxItems: 30 },
+            layout: { type: "string", maxLength: 60 },
+            data: { type: "object" },
+            config: { type: "object" },
+          },
+          additionalProperties: false,
+        },
+        execute: async (input) => {
+          const view: Partial<CanvasViewState> & Pick<CanvasViewState, "type"> = {
+            type: input.type as CanvasType,
+            title: input.title as string,
+            focusedNodeIds: input.sourceNodeIds as string[] | undefined,
+            layout: (input.layout as string | undefined) ?? "auto",
+            visualConfig: (input.config as CanvasViewState["visualConfig"] | undefined) ?? {},
+            data: input.data as VisualizationData,
+          };
+          requireBridge().setCanvasView(view);
+          return toolResult({ ok: true, canvasType: view.type });
+        },
+      },
+      {
+        name: "update_visualization",
+        title: "Update the visual canvas",
+        description: "Update or reframe the current visualization while preserving its source-linked research data.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table"] },
+            title: { type: "string", maxLength: 120 },
+            sourceNodeIds: { type: "array", items: { type: "string" }, maxItems: 30 },
+            layout: { type: "string", maxLength: 60 },
+            data: { type: "object" },
+            config: { type: "object" },
+          },
+          additionalProperties: false,
+        },
+        execute: async (input) => {
+          const current = requireBridge().getState().document.canvasView;
+          requireBridge().setCanvasView({
+            type: (input.type as CanvasType | undefined) ?? current.type,
+            title: (input.title as string | undefined) ?? current.title,
+            focusedNodeIds: (input.sourceNodeIds as string[] | undefined) ?? current.focusedNodeIds,
+            layout: (input.layout as string | undefined) ?? current.layout,
+            visualConfig: (input.config as CanvasViewState["visualConfig"] | undefined) ?? current.visualConfig,
+            data: (input.data as VisualizationData | undefined) ?? current.data,
+          });
+          return toolResult({ ok: true });
         },
       },
     ];

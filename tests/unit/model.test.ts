@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addAnchor, addNodes, emptyState, normalizeResearchState, redo, undo } from "../../src/model";
+import { addAnnotation, addAnchor, addNodes, emptyState, normalizeResearchState, redo, setCanvasView, undo } from "../../src/model";
 
 function stateWithAnchor() {
   return addAnchor(emptyState(), {
@@ -85,5 +85,31 @@ describe("research graph model", () => {
     const normalized = normalizeResearchState(state);
     expect(normalized.document.article.blocks.map((block) => block.id)).toEqual(["imported-0", "imported-0-2"]);
     expect(normalized.document.anchors[0].blockId).toBe("imported-0-2");
+  });
+
+  it("keeps Living Page layers and canvas views in the same reversible history", () => {
+    const anchored = stateWithAnchor();
+    const explained = addAnnotation(anchored.state, {
+      anchorId: anchored.anchor.id,
+      type: "explanation",
+      title: "What this means",
+      content: "The headline compares this year with the previous year.",
+      level: "beginner",
+    }, "agent");
+    const visualized = setCanvasView(explained, {
+      type: "diagram",
+      title: "How the claim is checked",
+      data: {
+        diagram: {
+          nodes: [{ id: "claim", label: "Claim" }, { id: "source", label: "Primary source" }],
+          edges: [{ from: "claim", to: "source", label: "checked against" }],
+        },
+      },
+    }, "agent");
+
+    expect(visualized.document.annotations[0].type).toBe("explanation");
+    expect(visualized.document.canvasView.type).toBe("diagram");
+    expect(undo(visualized).document.canvasView.type).toBe("research_graph");
+    expect(undo(undo(visualized)).document.annotations).toHaveLength(0);
   });
 });

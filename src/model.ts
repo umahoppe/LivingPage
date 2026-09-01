@@ -1,6 +1,8 @@
 import type {
   Actor,
+  AnnotationInput,
   ArticleDocument,
+  CanvasViewState,
   HistoryEntry,
   NodeInput,
   ResearchAnchor,
@@ -15,12 +17,22 @@ import { defaultArticle } from "./article-data";
 export const STORAGE_KEY = "research-garden:v1";
 
 export const emptyDocument = (): ResearchDocument => ({
-  version: 2,
+  version: 3,
   revision: 0,
   article: structuredClone(defaultArticle),
   anchors: [],
   nodes: [],
   sources: [],
+  annotations: [],
+  canvasView: {
+    type: "research_graph",
+    title: "Research",
+    focusedNodeIds: [],
+    layout: "branch-tree",
+    filters: [],
+    visualConfig: {},
+    data: {},
+  },
 });
 
 export const emptyState = (): ResearchState => ({
@@ -137,14 +149,101 @@ export function addAnchor(
 
 export function replaceArticle(state: ResearchState, article: ArticleDocument): ResearchState {
   const next = normalizeDocumentBlockIds({
-    version: 2,
+    version: 3,
     revision: state.document.revision,
     article: structuredClone(article),
     anchors: [],
     nodes: [],
     sources: [],
+    annotations: [],
+    canvasView: {
+      type: "research_graph",
+      title: "Research",
+      focusedNodeIds: [],
+      layout: "branch-tree",
+      filters: [],
+      visualConfig: {},
+      data: {},
+    },
   });
   return commitDocument(state, next, `Imported article: ${article.title}`, "human");
+}
+
+function validateAnnotationSources(input: AnnotationInput) {
+  return input.sources?.map((source) => {
+    const url = new URL(source.url);
+    if (!['http:', 'https:'].includes(url.protocol)) throw new Error(`Unsupported source URL protocol: ${url.protocol}`);
+    return { ...source, url: url.toString() };
+  });
+}
+
+export function addAnnotation(state: ResearchState, input: AnnotationInput, actor: Actor): ResearchState {
+  if (!state.document.anchors.some((anchor) => anchor.id === input.anchorId)) {
+    throw new Error(`Unknown anchor: ${input.anchorId}`);
+  }
+  const relatedNodeIds = input.relatedNodeIds ?? [];
+  if (relatedNodeIds.some((id) => !state.document.nodes.some((node) => node.id === id))) {
+    throw new Error("Annotation references an unknown research node");
+  }
+  const annotation = {
+    ...input,
+    sources: validateAnnotationSources(input),
+    relatedNodeIds,
+    id: makeId("annotation"),
+    createdBy: actor,
+    createdAt: new Date().toISOString(),
+    isCollapsed: false,
+    isPinned: false,
+  };
+  const next = { ...state.document, annotations: [...state.document.annotations, annotation] };
+  const label = input.type === "simplification"
+    ? "Added a simplified layer"
+    : input.type === "highlight"
+      ? "Highlighted the article"
+      : input.type === "verification"
+        ? "Added claim verification"
+        : "Added an inline explanation";
+  return commitDocument(state, next, label, actor);
+}
+
+export function toggleAnnotation(state: ResearchState, annotationId: string): ResearchState {
+  const next = {
+    ...state.document,
+    annotations: state.document.annotations.map((annotation) => annotation.id === annotationId
+      ? { ...annotation, isCollapsed: !annotation.isCollapsed }
+      : annotation),
+  };
+  return commitDocument(state, next, "Changed inline explanation visibility", "human");
+}
+
+export function removeAnnotation(state: ResearchState, annotationId: string): ResearchState {
+  const next = {
+    ...state.document,
+    annotations: state.document.annotations.filter((annotation) => annotation.id !== annotationId),
+  };
+  return commitDocument(state, next, "Removed a Living Page layer", "human");
+}
+
+export function setCanvasView(
+  state: ResearchState,
+  input: Partial<CanvasViewState> & Pick<CanvasViewState, "type">,
+  actor: Actor,
+): ResearchState {
+  const nextView: CanvasViewState = {
+    ...state.document.canvasView,
+    ...input,
+    focusedNodeIds: input.focusedNodeIds ?? state.document.canvasView.focusedNodeIds,
+    filters: input.filters ?? state.document.canvasView.filters,
+    visualConfig: input.visualConfig ?? state.document.canvasView.visualConfig,
+    data: input.data ?? state.document.canvasView.data,
+    updatedAt: new Date().toISOString(),
+  };
+  return commitDocument(
+    state,
+    { ...state.document, canvasView: nextView },
+    `Changed canvas to ${nextView.title}`,
+    actor,
+  );
 }
 
 function sourceFromInput(nodeId: string, input: SourceInput): ResearchSource {
@@ -283,16 +382,33 @@ export function loadState(): ResearchState {
     const storedVersion = (parsed.document as unknown as { version?: number } | undefined)?.version;
     if (storedVersion === 1) {
       const legacyDocument = parsed.document as unknown as Omit<ResearchDocument, "version" | "article">;
-      return normalizeResearchState({
+      const upgraded = {
         ...parsed,
         document: {
           ...legacyDocument,
-          version: 2,
+          version: 3,
           article: structuredClone(defaultArticle),
+          annotations: [],
+          canvasView: emptyDocument().canvasView,
         },
-      });
+      } as ResearchState;
+      return normalizeResearchState(upgraded);
     }
-    if (storedVersion !== 2 || !parsed.document.article) return emptyState();
+    if (storedVersion === 2 && parsed.document.article) {
+      const upgraded = {
+        ...parsed,
+        document: {
+          ...parsed.document,
+          version: 3,
+          annotations: [],
+          canvasView: emptyDocument().canvasView,
+        },
+        undoStack: [],
+        redoStack: [],
+      } as ResearchState;
+      return normalizeResearchState(upgraded);
+    }
+    if (storedVersion !== 3 || !parsed.document.article) return emptyState();
     return normalizeResearchState(parsed);
   } catch {
     return emptyState();

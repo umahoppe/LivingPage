@@ -10,20 +10,26 @@ import {
   type ReactNode,
 } from "react";
 import {
+  addAnnotation as addAnnotationToState,
   addAnchor as addAnchorToState,
   addNodes,
   addSource,
   loadState,
   replaceArticle as replaceArticleInState,
+  removeAnnotation as removeAnnotationFromState,
   redo as redoState,
   STORAGE_KEY,
+  setCanvasView as setCanvasViewInState,
+  toggleAnnotation as toggleAnnotationInState,
   toggleNode,
   undo as undoState,
 } from "./model";
 import type {
   Actor,
+  AnnotationInput,
   ArticleDocument,
   BranchType,
+  CanvasViewState,
   NodeInput,
   ResearchAnchor,
   ResearchNode,
@@ -31,6 +37,11 @@ import type {
   ResearchState,
   SourceInput,
 } from "./types";
+
+export interface LiveSelection extends AnchorInput {
+  selectionType: "text";
+  associatedAnchorId?: string;
+}
 
 export interface AnchorInput {
   blockId: string;
@@ -54,14 +65,20 @@ interface ResearchContextValue {
   activeAnchorId?: string;
   selectedNode?: ResearchNode;
   activity?: string;
+  currentSelection?: LiveSelection;
   setActiveAnchorId: (id: string) => void;
   setSelectedNodeId: (id?: string) => void;
   createAnchor: (input: AnchorInput) => ResearchAnchor;
+  setCurrentSelection: (selection?: LiveSelection) => void;
   replaceArticle: (article: ArticleDocument) => void;
   createNodes: (command: CreateNodesCommand, actor: Actor) => ResearchNode[];
   addSourceToNode: (nodeId: string, source: SourceInput, actor: Actor) => void;
   addQuickBranch: (anchorId: string, type: BranchType) => void;
   toggleBranch: (nodeId: string) => void;
+  addLivingAnnotation: (input: AnnotationInput, actor: Actor) => void;
+  toggleLivingAnnotation: (annotationId: string) => void;
+  removeLivingAnnotation: (annotationId: string) => void;
+  changeCanvasView: (input: Partial<CanvasViewState> & Pick<CanvasViewState, "type">, actor: Actor) => void;
   undo: () => void;
   redo: () => void;
 }
@@ -89,12 +106,18 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
   const [activeAnchorId, setActiveAnchorId] = useState<string | undefined>(() => state.document.anchors[0]?.id);
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
   const [activity, setActivity] = useState<string>();
+  const [currentSelection, setCurrentSelection] = useState<LiveSelection>();
+  const currentSelectionRef = useRef(currentSelection);
   const activityTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     stateRef.current = state;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }, [state]);
+
+  useEffect(() => {
+    currentSelectionRef.current = currentSelection;
+  }, [currentSelection]);
 
   const flashActivity = useCallback((message: string) => {
     setActivity(message);
@@ -162,6 +185,34 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     setState(next);
   }, []);
 
+  const addLivingAnnotation = useCallback((input: AnnotationInput, actor: Actor) => {
+    const next = addAnnotationToState(stateRef.current, input, actor);
+    stateRef.current = next;
+    setState(next);
+    setActiveAnchorId(input.anchorId);
+    flashActivity(actor === "agent" ? "Agent updated the Living Page" : "Living Page updated");
+  }, [flashActivity]);
+
+  const toggleLivingAnnotation = useCallback((annotationId: string) => {
+    const next = toggleAnnotationInState(stateRef.current, annotationId);
+    stateRef.current = next;
+    setState(next);
+  }, []);
+
+  const removeLivingAnnotation = useCallback((annotationId: string) => {
+    const next = removeAnnotationFromState(stateRef.current, annotationId);
+    stateRef.current = next;
+    setState(next);
+    flashActivity("Living Page layer removed");
+  }, [flashActivity]);
+
+  const changeCanvasView = useCallback((input: Partial<CanvasViewState> & Pick<CanvasViewState, "type">, actor: Actor) => {
+    const next = setCanvasViewInState(stateRef.current, input, actor);
+    stateRef.current = next;
+    setState(next);
+    flashActivity(actor === "agent" ? "Agent transformed the canvas" : "Canvas view changed");
+  }, [flashActivity]);
+
   const undo = useCallback(() => {
     const next = undoState(stateRef.current);
     stateRef.current = next;
@@ -184,14 +235,20 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     activeAnchorId,
     selectedNode,
     activity,
+    currentSelection,
     setActiveAnchorId,
     setSelectedNodeId,
     createAnchor,
+    setCurrentSelection,
     replaceArticle,
     createNodes,
     addSourceToNode,
     addQuickBranch,
     toggleBranch,
+    addLivingAnnotation,
+    toggleLivingAnnotation,
+    removeLivingAnnotation,
+    changeCanvasView,
     undo,
     redo,
   }), [
@@ -199,12 +256,17 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     activeAnchorId,
     selectedNode,
     activity,
+    currentSelection,
     createAnchor,
     replaceArticle,
     createNodes,
     addSourceToNode,
     addQuickBranch,
     toggleBranch,
+    addLivingAnnotation,
+    toggleLivingAnnotation,
+    removeLivingAnnotation,
+    changeCanvasView,
     undo,
     redo,
   ]);
@@ -212,13 +274,16 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     window.researchGarden = {
       getState: () => stateRef.current,
+      getSelection: () => currentSelectionRef.current,
       createNodes: (command) => createNodes(command, "agent"),
       addSource: (nodeId, source) => addSourceToNode(nodeId, source, "agent"),
+      addAnnotation: (input) => addLivingAnnotation(input, "agent"),
+      setCanvasView: (input) => changeCanvasView(input, "agent"),
     };
     return () => {
       delete window.researchGarden;
     };
-  }, [createNodes, addSourceToNode]);
+  }, [createNodes, addSourceToNode, addLivingAnnotation, changeCanvasView]);
 
   return <ResearchContext.Provider value={value}>{children}</ResearchContext.Provider>;
 }
@@ -233,8 +298,11 @@ declare global {
   interface Window {
     researchGarden?: {
       getState: () => ResearchState;
+      getSelection: () => LiveSelection | undefined;
       createNodes: (command: CreateNodesCommand) => ResearchNode[];
       addSource: (nodeId: string, source: SourceInput) => void;
+      addAnnotation: (input: AnnotationInput) => void;
+      setCanvasView: (input: Partial<CanvasViewState> & Pick<CanvasViewState, "type">) => void;
     };
   }
 }

@@ -11,6 +11,11 @@ export type BranchType =
 export type ContentType = "text" | "webpage" | "image" | "pdf" | "table";
 export type Actor = "human" | "agent";
 
+export type LivingAnnotationType = "explanation" | "simplification" | "highlight" | "verification";
+export type HighlightType = "important" | "claim" | "data" | "evidence" | "uncertain";
+export type VerificationStatus = "supported" | "mixed" | "unsupported" | "uncertain";
+export type CanvasType = "research_graph" | "diagram" | "timeline" | "comparison_table";
+
 export interface ArticleBlock {
   id: string;
   kind: "p" | "h2" | "quote";
@@ -54,6 +59,75 @@ export interface ResearchSource {
   relevantLocation?: string;
 }
 
+export interface AnnotationSource {
+  title: string;
+  url: string;
+  publisher?: string;
+  sourceType?: ResearchSource["sourceType"];
+}
+
+export interface LivingAnnotation {
+  id: string;
+  anchorId: string;
+  type: LivingAnnotationType;
+  title?: string;
+  content?: string;
+  level?: string;
+  highlightType?: HighlightType;
+  reason?: string;
+  status?: VerificationStatus;
+  sources?: AnnotationSource[];
+  relatedNodeIds: string[];
+  createdBy: Actor;
+  createdAt: string;
+  isCollapsed: boolean;
+  isPinned: boolean;
+}
+
+export interface DiagramNode {
+  id: string;
+  label: string;
+  description?: string;
+  sourceNodeIds?: string[];
+}
+
+export interface DiagramEdge {
+  from: string;
+  to: string;
+  label?: string;
+}
+
+export interface TimelineItem {
+  id: string;
+  date: string;
+  title: string;
+  description?: string;
+  sourceNodeIds?: string[];
+}
+
+export interface ComparisonRow {
+  label: string;
+  values: string[];
+  sourceNodeIds?: string[];
+}
+
+export interface VisualizationData {
+  diagram?: { nodes: DiagramNode[]; edges: DiagramEdge[] };
+  timeline?: TimelineItem[];
+  comparison?: { columns: string[]; rows: ComparisonRow[] };
+}
+
+export interface CanvasViewState {
+  type: CanvasType;
+  title: string;
+  focusedNodeIds: string[];
+  layout: string;
+  filters: string[];
+  visualConfig: Record<string, string | number | boolean>;
+  data: VisualizationData;
+  updatedAt?: string;
+}
+
 export interface ResearchNode {
   id: string;
   anchorId: string;
@@ -70,12 +144,14 @@ export interface ResearchNode {
 }
 
 export interface ResearchDocument {
-  version: 2;
+  version: 3;
   revision: number;
   article: ArticleDocument;
   anchors: ResearchAnchor[];
   nodes: ResearchNode[];
   sources: ResearchSource[];
+  annotations: LivingAnnotation[];
+  canvasView: CanvasViewState;
 }
 
 export interface HistoryEntry {
@@ -112,4 +188,17 @@ export interface NodeInput {
   body?: string;
   gapReason?: string;
   sources?: SourceInput[];
+}
+
+export interface AnnotationInput {
+  anchorId: string;
+  type: LivingAnnotationType;
+  title?: string;
+  content?: string;
+  level?: string;
+  highlightType?: HighlightType;
+  reason?: string;
+  status?: VerificationStatus;
+  sources?: AnnotationSource[];
+  relatedNodeIds?: string[];
 }

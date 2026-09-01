@@ -189,3 +189,94 @@ test("imports a public article and exposes its context to WebMCP", async ({ page
   await expect(page.getByRole("heading", { name: "Cities rethink the curb" })).toBeVisible();
   await expect(page.locator("[data-anchor-id]")).toHaveCount(1);
 });
+
+test("an agent transforms a selection into a sourced Living Page and visual canvas", async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await installWebMCPStub(page);
+  await page.goto("/");
+  await expect(page.getByText("WebMCP tools registered")).toBeVisible();
+
+  await page.locator('[data-block-id="claim-growth"]').scrollIntoViewIfNeeded();
+  await page.locator('[data-block-id="claim-growth"]').evaluate((element) => {
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    range.setStart(element.firstChild!, 0);
+    range.setEnd(element.firstChild!, 49);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.getByRole("button", { name: "Explain selection" }).click();
+
+  const liveResult = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const selectionResult = await tools.get_current_selection.execute({});
+    const selection = JSON.parse(selectionResult.content[0].text) as { selectedText: string; associatedAnchorId: string };
+    const anchorId = selection.associatedAnchorId;
+    await tools.insert_inline_explanation.execute({
+      anchorId,
+      title: "Why this number needs context",
+      explanation: "This is a year-over-year rate, so the baseline and geography determine what the percentage means.",
+      level: "Beginner",
+    });
+    await tools.insert_simplified_layer.execute({
+      anchorId,
+      simplifiedText: "EV sales were about one fifth higher than a year earlier.",
+      level: "Plain language",
+    });
+    await tools.add_highlight.execute({ anchorId, highlightType: "claim", reason: "Key claim" });
+    await tools.add_verification.execute({
+      anchorId,
+      status: "mixed",
+      summary: "The direction is supported, but the exact global rate depends on the dataset and period.",
+      sources: [{
+        title: "Global EV Outlook",
+        url: "https://www.iea.org/reports/global-ev-outlook-2026",
+        publisher: "IEA",
+        sourceType: "official",
+      }],
+    });
+    await tools.create_visualization.execute({
+      type: "diagram",
+      title: "How to read the growth claim",
+      sourceNodeIds: [],
+      data: {
+        diagram: {
+          nodes: [
+            { id: "claim", label: "20% growth claim", description: "The statement being tested" },
+            { id: "scope", label: "Define scope", description: "Period, geography, and vehicle type" },
+            { id: "evidence", label: "Check source", description: "Compare with the primary dataset" },
+          ],
+          edges: [{ from: "claim", to: "scope" }, { from: "scope", to: "evidence" }],
+        },
+      },
+      config: {},
+    });
+    const contextResult = await tools.get_visible_page_context.execute({});
+    const context = JSON.parse(contextResult.content[0].text) as { canvasType: string; activeExplanations: unknown[] };
+    return { selection, context };
+  });
+
+  expect(liveResult.selection.selectedText).toContain("Global EV sales increased");
+  expect(liveResult.context.canvasType).toBe("diagram");
+  expect(liveResult.context.activeExplanations).toHaveLength(4);
+  await expect(page.getByText("Why this number needs context")).toBeVisible();
+  await expect(page.getByText("EV sales were about one fifth higher")).toBeVisible();
+  await expect(page.getByText("mixed", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "IEA" })).toBeVisible();
+  await expect(page.locator(".research-mark.highlight-claim")).toHaveCount(1);
+  await expect(page.locator('[data-canvas-type="diagram"]')).toBeVisible();
+  await expect(page.getByText("20% growth claim")).toBeVisible();
+
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(page.locator('[data-canvas-type="diagram"]')).toHaveCount(0);
+  await page.getByRole("button", { name: "Redo" }).click();
+  await expect(page.locator('[data-canvas-type="diagram"]')).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("Why this number needs context")).toBeVisible();
+  await expect(page.locator('[data-canvas-type="diagram"]')).toBeVisible();
+  expect(consoleErrors).toEqual([]);
+});

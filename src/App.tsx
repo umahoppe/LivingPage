@@ -1,6 +1,8 @@
 import {
+  AlignLeft,
   ArrowUpRight,
   Bot,
+  BookOpen,
   Check,
   ChevronDown,
   ChevronRight,
@@ -13,18 +15,30 @@ import {
   History,
   Link2,
   LoaderCircle,
+  Network,
+  PanelRightClose,
+  PanelRightOpen,
   Quote,
   Redo2,
   Search,
   ShieldCheck,
   Sparkles,
+  Table2,
   Undo2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { defaultArticle } from "./article-data";
 import { useResearch, type AnchorInput } from "./research-context";
-import type { ArticleBlock, ArticleDocument, BranchType, ResearchAnchor, ResearchNode } from "./types";
+import type {
+  ArticleBlock,
+  ArticleDocument,
+  BranchType,
+  CanvasType,
+  LivingAnnotation,
+  ResearchAnchor,
+  ResearchNode,
+} from "./types";
 import { useWebMCP } from "./webmcp";
 
 const branchMeta: Record<BranchType, { label: string; icon: typeof Search; tone: string }> = {
@@ -58,6 +72,27 @@ function buildAgentRequest(anchorId: string) {
   ].join("\n");
 }
 
+const actionPrompts = {
+  explain: "Explain this selection for a beginner and place the explanation beside the text.",
+  simplify: "Rewrite this selection in simpler language without replacing the original.",
+  visualize: "Show this selection as a clear diagram in the Visual Thinking Canvas.",
+  research: "Research what is missing around this selection and grow sourced branches.",
+  verify: "Verify this claim with reliable sources and add the result beside the text.",
+} as const;
+
+type SelectionIntent = keyof typeof actionPrompts;
+
+function buildLivingPageRequest(anchorId: string, prompt: string) {
+  return [
+    "Use the WebMCP tools registered by the open Living Page.",
+    `Current anchor ID: ${anchorId}`,
+    `User request: ${prompt}`,
+    "Read get_current_selection and get_visible_page_context first.",
+    "Use insert_inline_explanation, insert_simplified_layer, add_highlight, add_verification, create_research_nodes, or create_visualization as appropriate.",
+    "Make the result visible in the page or canvas; do not stop at a chat-only answer.",
+  ].join("\n");
+}
+
 function fallbackCopy(text: string) {
   const textarea = document.createElement("textarea");
   textarea.value = text;
@@ -85,16 +120,24 @@ function App() {
     activeAnchorId,
     selectedNode,
     activity,
+    currentSelection,
     setActiveAnchorId,
     setSelectedNodeId,
     createAnchor,
+    setCurrentSelection,
     replaceArticle,
+    toggleLivingAnnotation,
+    removeLivingAnnotation,
     undo,
     redo,
   } = useResearch();
   const [pending, setPending] = useState<PendingSelection>();
   const [showImport, setShowImport] = useState(false);
+  const [canvasOpen, setCanvasOpen] = useState(true);
+  const [commandValue, setCommandValue] = useState("");
+  const [commandFeedback, setCommandFeedback] = useState<string>();
   const articleRef = useRef<HTMLElement>(null);
+  const commandRef = useRef<HTMLInputElement>(null);
   const selectionTimer = useRef<number | undefined>(undefined);
   const article = state.document.article;
 
@@ -135,10 +178,19 @@ function App() {
       suffix: fullText.slice(endOffset, endOffset + 48),
       startOffset,
       endOffset,
-      x: Math.min(window.innerWidth - 220, Math.max(16, rect.left + rect.width / 2 - 94)),
+      x: Math.min(window.innerWidth - 330, Math.max(16, rect.left + rect.width / 2 - 150)),
       y: Math.min(window.innerHeight - 54, Math.max(76, rect.bottom + 10)),
     });
-  }, []);
+    setCurrentSelection({
+      selectionType: "text",
+      blockId: block.dataset.blockId!,
+      quote,
+      prefix: fullText.slice(Math.max(0, startOffset - 48), startOffset),
+      suffix: fullText.slice(endOffset, endOffset + 48),
+      startOffset,
+      endOffset,
+    });
+  }, [setCurrentSelection]);
 
   useEffect(() => {
     const scheduleSelectionUpdate = () => {
@@ -156,9 +208,9 @@ function App() {
     };
   }, [updatePendingSelection]);
 
-  const confirmAnchor = () => {
+  const confirmAnchor = (intent: SelectionIntent = "research") => {
     if (!pending) return;
-    createAnchor({
+    const anchor = createAnchor({
       blockId: pending.blockId,
       quote: pending.quote,
       prefix: pending.prefix,
@@ -166,8 +218,36 @@ function App() {
       startOffset: pending.startOffset,
       endOffset: pending.endOffset,
     });
+    setCurrentSelection({
+      selectionType: "text",
+      blockId: pending.blockId,
+      quote: pending.quote,
+      prefix: pending.prefix,
+      suffix: pending.suffix,
+      startOffset: pending.startOffset,
+      endOffset: pending.endOffset,
+      associatedAnchorId: anchor.id,
+    });
+    setCommandValue(actionPrompts[intent]);
+    setCommandFeedback(intent === "research" ? "Research anchor ready" : "Request ready for your agent");
     setPending(undefined);
     window.getSelection()?.removeAllRanges();
+    window.setTimeout(() => commandRef.current?.focus(), 0);
+  };
+
+  const submitCommand = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const anchorId = currentSelection?.associatedAnchorId;
+    if (!anchorId || !commandValue.trim()) {
+      setCommandFeedback("Select article text first");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(buildLivingPageRequest(anchorId, commandValue.trim()));
+      setCommandFeedback("Agent request copied — paste it into ChatGPT");
+    } catch {
+      setCommandFeedback("Copy failed — your selection is still anchored");
+    }
   };
 
   const setImportedArticle = (nextArticle: ArticleDocument) => {
@@ -202,6 +282,11 @@ function App() {
             {statusCopy}
           </div>
           <div className="toolbar-separator" />
+          {!canvasOpen && (
+            <button className="icon-button" onClick={() => setCanvasOpen(true)} aria-label="Open visual canvas">
+              <PanelRightOpen size={17} />
+            </button>
+          )}
           <button className="icon-button" onClick={undo} disabled={!state.undoStack.length} aria-label="Undo">
             <Undo2 size={17} />
           </button>
@@ -212,7 +297,7 @@ function App() {
         </div>
       </header>
 
-      <main className="workspace">
+      <main className={`workspace ${canvasOpen ? "" : "canvas-closed"}`}>
         <article className="article-pane" data-article ref={articleRef}>
           <div className="article-inner">
             {article.sourceUrl && (
@@ -252,8 +337,11 @@ function App() {
                   key={block.id}
                   block={block}
                   anchors={state.document.anchors.filter((anchor) => anchor.blockId === block.id)}
+                  annotations={state.document.annotations}
                   activeAnchorId={activeAnchorId}
                   onAnchorClick={setActiveAnchorId}
+                  onToggleAnnotation={toggleLivingAnnotation}
+                  onRemoveAnnotation={removeLivingAnnotation}
                 />
               ))}
             </div>
@@ -261,19 +349,35 @@ function App() {
           </div>
         </article>
 
-        <ResearchLayer />
+        {canvasOpen && <ResearchLayer onClose={() => setCanvasOpen(false)} />}
       </main>
 
       {pending && (
-        <button
-          className="selection-action"
+        <div
+          className="selection-menu"
           style={{ left: pending.x, top: pending.y }}
           onMouseDown={(event) => event.preventDefault()}
-          onClick={confirmAnchor}
         >
-          <Sparkles size={15} /> Grow research here
-        </button>
+          <button onClick={() => confirmAnchor("explain")} aria-label="Explain selection"><Sparkles size={14} /><span>Explain</span></button>
+          <button onClick={() => confirmAnchor("simplify")} aria-label="Simplify selection"><AlignLeft size={14} /><span>Simplify</span></button>
+          <button onClick={() => confirmAnchor("visualize")} aria-label="Visualize selection"><Network size={14} /><span>Visualize</span></button>
+          <button onClick={() => confirmAnchor("research")} aria-label="Grow research here"><BookOpen size={14} /><span>Research</span></button>
+          <button onClick={() => confirmAnchor("verify")} aria-label="Verify selection"><ShieldCheck size={14} /><span>Verify</span></button>
+        </div>
       )}
+
+      <form className="command-bar" onSubmit={submitCommand}>
+        <Sparkles size={15} />
+        <input
+          ref={commandRef}
+          aria-label="Ask the Living Page"
+          placeholder="Select text, then ask the page to explain, compare, or verify…"
+          value={commandValue}
+          onChange={(event) => setCommandValue(event.target.value)}
+        />
+        {commandFeedback && <span>{commandFeedback}</span>}
+        <button type="submit">Ask agent</button>
+      </form>
 
       {activity && <div className="activity-toast"><Check size={15} />{activity}</div>}
       {selectedNode && <NodeDetail node={selectedNode} onClose={() => setSelectedNodeId(undefined)} />}
@@ -374,13 +478,19 @@ function ArticleImportDialog({
 function ArticleBlockView({
   block,
   anchors,
+  annotations,
   activeAnchorId,
   onAnchorClick,
+  onToggleAnnotation,
+  onRemoveAnnotation,
 }: {
   block: ArticleBlock;
   anchors: ResearchAnchor[];
+  annotations: LivingAnnotation[];
   activeAnchorId?: string;
   onAnchorClick: (id: string) => void;
+  onToggleAnnotation: (id: string) => void;
+  onRemoveAnnotation: (id: string) => void;
 }) {
   const Tag = block.kind === "h2" ? "h2" : block.kind === "quote" ? "blockquote" : "p";
   if (!anchors.length) {
@@ -391,20 +501,33 @@ function ArticleBlockView({
   const parts: React.ReactNode[] = [];
   let cursor = 0;
   for (const anchor of sorted) {
+    const anchorAnnotations = annotations.filter((annotation) => annotation.anchorId === anchor.id);
+    const highlight = anchorAnnotations.find((annotation) => annotation.type === "highlight");
     parts.push(block.text.slice(cursor, anchor.startOffset));
     parts.push(
-      <mark
-        key={anchor.id}
-        className={anchor.id === activeAnchorId ? "research-mark active" : "research-mark"}
-        data-anchor-id={anchor.id}
-        onClick={(event) => {
-          event.stopPropagation();
-          onAnchorClick(anchor.id);
-        }}
-      >
-        {block.text.slice(anchor.startOffset, anchor.endOffset)}
-        <span className="anchor-pin"><Link2 size={10} /></span>
-      </mark>,
+      <span className="living-anchor" key={anchor.id}>
+        <mark
+          className={`${anchor.id === activeAnchorId ? "research-mark active" : "research-mark"} ${highlight ? `highlight-${highlight.highlightType}` : ""}`}
+          data-anchor-id={anchor.id}
+          title={highlight?.reason}
+          onClick={(event) => {
+            event.stopPropagation();
+            onAnchorClick(anchor.id);
+          }}
+        >
+          {block.text.slice(anchor.startOffset, anchor.endOffset)}
+          <span className="anchor-pin"><Link2 size={10} /></span>
+        </mark>
+        {highlight?.reason && <span className={`highlight-reason ${highlight.highlightType}`}>{highlight.reason}</span>}
+        {anchorAnnotations.filter((annotation) => annotation.type !== "highlight").map((annotation) => (
+          <InlineAnnotationCard
+            key={annotation.id}
+            annotation={annotation}
+            onToggle={() => onToggleAnnotation(annotation.id)}
+            onRemove={() => onRemoveAnnotation(annotation.id)}
+          />
+        ))}
+      </span>,
     );
     cursor = anchor.endOffset;
   }
@@ -412,7 +535,55 @@ function ArticleBlockView({
   return <Tag data-block-id={block.id}>{parts}</Tag>;
 }
 
-function ResearchLayer() {
+function InlineAnnotationCard({
+  annotation,
+  onToggle,
+  onRemove,
+}: {
+  annotation: LivingAnnotation;
+  onToggle: () => void;
+  onRemove: () => void;
+}) {
+  const label = annotation.type === "simplification"
+    ? "Simplified"
+    : annotation.type === "verification"
+      ? "Verification"
+      : "Inline explanation";
+  return (
+    <span className={`inline-layer ${annotation.type}`} data-annotation-id={annotation.id} role="note">
+      <span className="inline-layer-head">
+        <span>
+          {annotation.type === "verification" ? <ShieldCheck size={13} /> : <Sparkles size={13} />}
+          <strong>{annotation.status ?? label}</strong>
+          {annotation.level && <em>{annotation.level}</em>}
+        </span>
+        <span className="inline-layer-actions">
+          <button type="button" onClick={onToggle} aria-label={annotation.isCollapsed ? "Expand inline layer" : "Collapse inline layer"}>
+            {annotation.isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+          </button>
+          <button type="button" onClick={onRemove} aria-label="Remove inline layer"><X size={13} /></button>
+        </span>
+      </span>
+      {!annotation.isCollapsed && (
+        <span className="inline-layer-body">
+          {annotation.title && <strong>{annotation.title}</strong>}
+          {annotation.content && <span>{annotation.content}</span>}
+          {annotation.sources?.length ? (
+            <span className="inline-sources">
+              {annotation.sources.map((source) => (
+                <a key={source.url} href={source.url} target="_blank" rel="noreferrer">
+                  {source.publisher ?? source.title}<ArrowUpRight size={10} />
+                </a>
+              ))}
+            </span>
+          ) : null}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function ResearchLayer({ onClose }: { onClose: () => void }) {
   const {
     state,
     activeAnchorId,
@@ -420,7 +591,9 @@ function ResearchLayer() {
     setSelectedNodeId,
     addQuickBranch,
     toggleBranch,
+    changeCanvasView,
   } = useResearch();
+  const canvasView = state.document.canvasView;
   const [copyFeedback, setCopyFeedback] = useState<{ anchorId: string; status: "copied" | "failed" }>();
   const copyFeedbackTimer = useRef<number | undefined>(undefined);
 
@@ -452,16 +625,38 @@ function ResearchLayer() {
   };
 
   return (
-    <aside className="research-pane" aria-label="Research layer">
+    <aside className="research-pane" aria-label="Visual Thinking Canvas">
       <div className="research-header">
         <div>
-          <div className="eyebrow"><GitBranch size={13} /> LIVE RESEARCH LAYER</div>
-          <h2>Evidence grows from the text</h2>
+          <div className="eyebrow"><Network size={13} /> VISUAL THINKING CANVAS</div>
+          <h2>{canvasView.title}</h2>
         </div>
-        <div className="layer-count">{state.document.anchors.length} anchors</div>
+        <div className="canvas-header-actions">
+          <div className="layer-count">{state.document.anchors.length} anchors</div>
+          <button className="canvas-close" onClick={onClose} aria-label="Close visual canvas"><PanelRightClose size={15} /></button>
+        </div>
       </div>
 
-      {!state.document.anchors.length ? (
+      <div className="canvas-view-switcher" aria-label="Canvas view">
+        {([
+          ["research_graph", "Research", GitBranch],
+          ["diagram", "Diagram", Network],
+          ["timeline", "Timeline", History],
+          ["comparison_table", "Compare", Table2],
+        ] as const).map(([type, label, Icon]) => (
+          <button
+            key={type}
+            className={canvasView.type === type ? "active" : ""}
+            onClick={() => changeCanvasView({ type, title: label }, "human")}
+          >
+            <Icon size={12} />{label}
+          </button>
+        ))}
+      </div>
+
+      {canvasView.type !== "research_graph" ? (
+        <VisualizationView type={canvasView.type} />
+      ) : !state.document.anchors.length ? (
         <div className="empty-layer">
           <div className="empty-illustration">
             <div className="empty-line line-a" />
@@ -543,6 +738,101 @@ function ResearchLayer() {
         </div>
       )}
     </aside>
+  );
+}
+
+function VisualizationView({ type }: { type: Exclude<CanvasType, "research_graph"> }) {
+  const { state, setSelectedNodeId } = useResearch();
+  const { data } = state.document.canvasView;
+  const researchNodes = state.document.nodes;
+
+  if (type === "diagram") {
+    const nodes = data.diagram?.nodes ?? researchNodes.map((node) => ({
+      id: node.id,
+      label: node.title,
+      description: node.summary,
+      sourceNodeIds: [node.id],
+    }));
+    const edges = data.diagram?.edges ?? researchNodes
+      .filter((node) => node.parentId)
+      .map((node) => ({ from: node.parentId!, to: node.id }));
+    if (!nodes.length) return <EmptyVisualization type="diagram" />;
+    return (
+      <div className="visualization diagram-view" data-canvas-type="diagram">
+        <div className="diagram-flow">
+          {nodes.map((node, index) => (
+            <div className="diagram-step" key={node.id}>
+              {index > 0 && <div className="diagram-arrow">↓</div>}
+              <button onClick={() => node.sourceNodeIds?.[0] && setSelectedNodeId(node.sourceNodeIds[0])}>
+                <span>{String(index + 1).padStart(2, "0")}</span>
+                <strong>{node.label}</strong>
+                {node.description && <p>{node.description}</p>}
+              </button>
+            </div>
+          ))}
+        </div>
+        {edges.length > 0 && <div className="visual-caption">{edges.length} sourced relationships</div>}
+      </div>
+    );
+  }
+
+  if (type === "timeline") {
+    const items = data.timeline ?? researchNodes.map((node) => ({
+      id: node.id,
+      date: new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(node.createdAt)),
+      title: node.title,
+      description: node.summary,
+      sourceNodeIds: [node.id],
+    }));
+    if (!items.length) return <EmptyVisualization type="timeline" />;
+    return (
+      <div className="visualization timeline-view" data-canvas-type="timeline">
+        {items.map((item) => (
+          <button key={item.id} className="timeline-item" onClick={() => item.sourceNodeIds?.[0] && setSelectedNodeId(item.sourceNodeIds[0])}>
+            <span className="timeline-date">{item.date}</span>
+            <span className="timeline-dot" />
+            <span><strong>{item.title}</strong>{item.description && <p>{item.description}</p>}</span>
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  const comparison = data.comparison ?? {
+    columns: ["Perspective", "Summary", "Sources"],
+    rows: researchNodes.map((node) => ({
+      label: branchMeta[node.type].label,
+      values: [node.title, node.summary, String(state.document.sources.filter((source) => source.nodeId === node.id).length)],
+      sourceNodeIds: [node.id],
+    })),
+  };
+  if (!comparison.rows.length) return <EmptyVisualization type="comparison" />;
+  return (
+    <div className="visualization comparison-view" data-canvas-type="comparison_table">
+      <div className="comparison-table" style={{ gridTemplateColumns: `repeat(${comparison.columns.length}, minmax(120px, 1fr))` }}>
+        {comparison.columns.map((column) => <strong className="comparison-head" key={column}>{column}</strong>)}
+        {comparison.rows.flatMap((row, rowIndex) => row.values.map((value, columnIndex) => (
+          <button
+            key={`${rowIndex}-${columnIndex}`}
+            className="comparison-cell"
+            onClick={() => row.sourceNodeIds?.[0] && setSelectedNodeId(row.sourceNodeIds[0])}
+          >
+            {columnIndex === 0 && <em>{row.label}</em>}
+            {value}
+          </button>
+        )))}
+      </div>
+    </div>
+  );
+}
+
+function EmptyVisualization({ type }: { type: string }) {
+  return (
+    <div className="empty-visualization">
+      <Network size={28} />
+      <strong>No {type} yet</strong>
+      <span>Ask your agent to transform the current research into this view.</span>
+    </div>
   );
 }
 
