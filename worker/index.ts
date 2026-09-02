@@ -1,6 +1,6 @@
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
-import type { ArticleBlock, ArticleDocument } from "../src/types";
+import type { ArticleBlock, ArticleDocument, ArticleLink } from "../src/types";
 
 interface AssetBinding {
   fetch(request: Request): Promise<Response>;
@@ -80,14 +80,77 @@ async function articleId(url: URL) {
   return `article_${[...new Uint8Array(digest)].slice(0, 8).map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-function extractBlocks(content: string): ArticleBlock[] {
+const MAX_LINKS_PER_BLOCK = 24;
+
+function withoutHash(value: string) {
+  const url = new URL(value);
+  url.hash = "";
+  return url.toString();
+}
+
+function collectTextWithLinks(root: Element, baseUrl: URL) {
+  const links: ArticleLink[] = [];
+  let text = "";
+
+  const append = (value: string) => {
+    let piece = value.replace(/\s+/g, " ");
+    if (!piece) return;
+    if (!text || text.endsWith(" ")) piece = piece.replace(/^ /, "");
+    text += piece;
+  };
+
+  const walk = (node: Node) => {
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === 3) {
+        append(child.nodeValue ?? "");
+        continue;
+      }
+      if (child.nodeType !== 1) continue;
+      const element = child as Element;
+      if (element.localName === "a") {
+        const url = resolvePublicAsset(element.getAttribute("href"), baseUrl);
+        const start = text.length;
+        walk(element);
+        const end = text.length;
+        const isSamePage = url ? withoutHash(url) === withoutHash(baseUrl.toString()) : true;
+        if (url && !isSamePage && end > start && links.length < MAX_LINKS_PER_BLOCK) links.push({ start, end, url });
+        continue;
+      }
+      walk(element);
+    }
+  };
+
+  walk(root);
+  const trimmed = text.trimEnd();
+  const scoped = links
+    .map((link) => ({ ...link, end: Math.min(link.end, trimmed.length) }))
+    .filter((link) => link.end > link.start && trimmed.slice(link.start, link.end).trim().length > 0);
+  return { text: trimmed, links: scoped };
+}
+
+function applyDocumentBase(document: Document, sourceUrl: URL): URL {
+  const existing = document.querySelector("base[href]");
+  const declared = resolvePublicAsset(existing?.getAttribute("href"), sourceUrl);
+  const resolved = declared ? new URL(declared) : sourceUrl;
+  if (existing) {
+    existing.setAttribute("href", resolved.toString());
+    return resolved;
+  }
+  const base = document.createElement("base");
+  base.setAttribute("href", resolved.toString());
+  const head = document.querySelector("head") ?? document.documentElement;
+  head?.insertBefore(base, head.firstChild);
+  return resolved;
+}
+
+function extractBlocks(content: string, baseUrl: URL): ArticleBlock[] {
   const { document } = parseHTML(content);
   const blocks: ArticleBlock[] = [];
   const seen = new Set<string>();
   let index = 0;
 
   for (const element of document.querySelectorAll("h2, h3, p, blockquote, li")) {
-    const text = cleanText(element.textContent);
+    const { text, links } = collectTextWithLinks(element as unknown as Element, baseUrl);
     const isHeading = element.localName === "h2" || element.localName === "h3";
     if ((isHeading && text.length < 3) || (!isHeading && text.length < 35) || text.length > 1_800) continue;
     const signature = text.toLowerCase();
@@ -97,6 +160,7 @@ function extractBlocks(content: string): ArticleBlock[] {
       id: `imported-${index++}`,
       kind: isHeading ? "h2" : element.localName === "blockquote" ? "quote" : "p",
       text,
+      ...(links.length ? { links } : {}),
     });
     if (blocks.length >= 80) break;
   }
@@ -105,6 +169,7 @@ function extractBlocks(content: string): ArticleBlock[] {
 
 export async function extractArticle(html: string, sourceUrl: URL): Promise<ArticleDocument> {
   const { document } = parseHTML(html);
+  const baseUrl = applyDocumentBase(document as unknown as Document, sourceUrl);
   const meta = (selector: string) => document.querySelector(selector)?.getAttribute("content");
   const siteName = cleanText(meta('meta[property="og:site_name"]')) || sourceUrl.hostname.replace(/^www\./, "");
   const publishedAt = meta('meta[property="article:published_time"]')
@@ -118,7 +183,7 @@ export async function extractArticle(html: string, sourceUrl: URL): Promise<Arti
   }).parse();
   if (!parsed?.content || !parsed.textContent) throw new ImportError("We could not identify a readable article on this page.", 422);
 
-  let blocks = extractBlocks(parsed.content);
+  let blocks = extractBlocks(parsed.content, baseUrl);
   if (blocks.length < 2) {
     const fallback = parsed.textContent
       .split(/\n{2,}/)
@@ -140,7 +205,7 @@ export async function extractArticle(html: string, sourceUrl: URL): Promise<Arti
     publishedAt,
     sourceUrl: sourceUrl.toString(),
     siteName,
-    heroImageUrl: resolvePublicAsset(originalHero || contentImage, sourceUrl),
+    heroImageUrl: resolvePublicAsset(originalHero || contentImage, baseUrl),
     importedAt: new Date().toISOString(),
     blocks,
   };

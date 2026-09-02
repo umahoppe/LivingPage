@@ -49,3 +49,35 @@ Original prompt: 添付の開発指示書を起点に、Canvasではなく閲覧
 - 検証: unit 9/9、Playwright E2E 4/4、ESLint、TypeScript、Sites production build、`git diff --check`成功。Playwright CLIでCanvas close→Agent Image Board→自動open、画像表示、拡大、個別削除、console error 0を確認した。
 - 未完: Staged Agent Changes、Profile UI、Chart / Pros-Cons / Visual Summary、高度なDynamic Tool Availability、公開環境のWebMCPライブ呼び出し。
 - 次アクション: ユーザーの通常ブラウザとWebMCP対応ブラウザでImage Boardと削除Undoを再確認し、その後Staged Changesへ進む。
+
+## 2026-09-02 — Living Page Loop 3
+
+- 完了: インポート記事の本文リンクを保持するようにした。Readabilityへ渡す前に原典URLの`<base>`を適用し、相対URLがlocalhostへ解決される不具合を修正。ブロック本文の文字オフセット範囲としてリンクを保存し、HTTP(S)以外と同一ページ内アンカーは除外する。
+- 完了: 記事中リンクのクリックで、右側にLink Peek readerを開くようにした。同じ抽出・安全性チェックで本文を読め、Research Layerには一切影響しない。読んだ先からさらにリンクを辿れ、戻る操作、原典を新規タブで開く操作、「Study this page in the garden」で主記事へ昇格する操作を用意した。
+- 検証: unit 10/10、Playwright E2E 4/4、ESLint、TypeScript、production build、`git diff --check`成功。実ブラウザでWikipedia記事をインポートし、284本のリンク描画、Peek表示、ネスト遷移と戻る、抽出不能ページのエラー表示、リンクを跨いだ選択でもAnchorオフセットが一致することを確認した。
+- 完了: エージェントへの依頼口をAsk Bar 1本へ統一した。選択メニューはAnchor作成・文面投入・クリップボードコピーまでを1クリックで行い、バーには`[Simplify] "選択文"`のChipと状態表示、`Copy request` / `Copied`のボタンが出る。右パネルの`Copy agent request`カードと日本語専用プロンプトを廃止し、Guardrail入りの単一プロンプトに統合した。
+- 完了: 右パネルをLayers / Canvasの2タブへ分割。LayersはすべてのAnchorをExplained / Simplified / Highlighted / Verified / n research cardsのバッジ付きで常時表示し、Inline結果が入ってもカードは消えない。行クリックで本文の該当箇所へスクロールしフラッシュする。CanvasはResearch / Diagram / Timeline / Compare / Imagesを保持し、Agentの更新は該当タブを自動で開く。
+- 検証: unit 10/10、Playwright E2E 4/4、ESLint、TypeScript、production build、`git diff --check`成功。実ブラウザでSimplify 1クリック→Chip・コピー・Waiting for your agentバッジ→Agent適用後もカードが残りSimplifiedバッジと本文Inline Layerが揃うこと、research card追加、Canvasタブのresearch graph表示、console error 0を確認した。
+- 未完: Staged Agent Changes、Accept / Inspect、Profile UI、Chart / Pros-Cons / Visual Summary、公開環境でのWebMCPライブ呼び出し。
+- 次アクション: Sitesへ再デプロイし、公開URLとWebMCP対応ブラウザでAsk Bar一本化とLink Peekを再確認する。
+
+## 2026-09-02 — Living Page Loop 5
+
+- 完了: Canvas Type `map`を追加し、場所を含む問いにAgentが実地図で答えられるようにした。Leaflet + OpenStreetMapラスタータイルによる本物のSlippy Mapで、Marker（label / note / source link / sourceNodeIds）を番号付きPinとLegendの両方に表示し、どちらを選んでも該当地点へ移動してResearch Cardを開く。
+- 完了: `create_visualization` / `update_visualization`を`map`対応にし、Marker再送なしで視点だけ動かす`set_map_view`（center / zoom / focusMarkerId）を追加した。
+- 完了: 位置の認識を双方向にした。`get_canvas_state`と`get_visible_page_context`が現在のViewport（center、zoom、bounds、画面内Marker）を返すため、Agentは回答前に読者がどこを見ているかを読める。
+- 安全性: 座標はAgentが与える設計とし、ページ側でのGeocodingと端末位置情報の取得は行わない。緯度-90〜90、経度-180〜180、Label必須、id重複禁止、Marker上限250、source URLはHTTP(S)のみを検証し、PopupはAgent提供テキストをDOMノードとして組み立ててHTML注入を避けた。タイル出典表示はLeafletのattributionで常時表示する。
+- 完了: 選択メニューへMapプリセットを追加し、Ask Barのプロンプトに「Markerには実WGS84座標を自分で用意する」ガードレールを追記した。Canvas切替は6タブを1行に収めた。
+- 検証: unit 12/12、Playwright E2E 5/5、ESLint、TypeScript、production build成功。E2Eはタイルサーバをstubし、Marker描画、Viewport報告、`set_map_view`によるFly、読者操作のズーム、Marker削除とUndo、console error 0を確認した。実ブラウザでも実タイル表示とPin / Legendの見た目を確認した。
+- 未完: Staged Agent Changes、Profile UI、Chart / Pros-Cons / Visual Summary、公開環境でのWebMCPライブ呼び出しとMap Canvasの実機確認。
+- 次アクション: Sitesへ再デプロイし、WebMCP対応ブラウザで`create_visualization(type:"map")`と`set_map_view`をライブ実行して確認する。
+
+## 2026-09-02 — Living Page Loop 6
+
+- 完了: 選択メニューのクリックをクリップボードコピーからページ内Request Queueへの投入に変えた。読者は記事を読みながらExplain / Simplify / Visualize / Map / Research / Verifyを複数か所に付けておき、チャットには最後に一度だけ「Process my marks.」と言う。マーク時のクリップボード書き込みは完全に廃止した。
+- 完了: WebMCPへ`get_pending_requests`と`resolve_request`を追加した。前者はキューを投入順に返し、各項目のrequestId、anchorId、正確な引用、前後文脈、intentに合うツール候補、そのAnchorに既に付いているLayerとResearch Card数を含む。後者は1件ずつdone / skippedで消し込み、一行サマリとappliedToを残す。`get_page_context`と`get_visible_page_context`にも`pendingRequestCount`を追加した。
+- 完了: 右パネルをLayers / Queue / Canvasの3タブへ拡張した。QueueタブはHandoff文の提示と全文プロンプトのコピー、未処理リストの引用・intent・prompt表示、行クリックで本文へスクロール、個別削除、Agent既読表示、Resolved履歴とClearを持つ。Ask Barは`Copy request`から`Add to queue`へ変え、未処理件数のPillを出す。
+- 設計: Queue状態はResearch Documentの外に置いた。マークしてもgraph revisionが進まないため、Agentが保持する`baseRevision`を壊さず、Research用のUndo Stackにも積まれない。Anchorの削除・Undoで宙に浮いたRequestは`withLiveRequests`で自動的に落とす。二重解決は`already done`エラーで拒否する。
+- 検証: unit 18/18、Playwright E2E 6/6、ESLint、TypeScript、production build成功。新規E2Eは3か所を別intentでマークし、クリップボードが空のままであること、`get_pending_requests`が3件を順序どおり返すこと、Agent既読表示、explain / verifyの適用と1件skip、pendingが0になること、Reload後もResolved履歴が残りClearできること、console error 0を確認した。
+- 未完: Staged Agent Changes、Profile UI、Chart / Pros-Cons / Visual Summary、公開環境でのWebMCPライブ呼び出しとRequest Queueの実機確認。
+- 次アクション: Sitesへ再デプロイし、WebMCP対応ブラウザで複数マーク→一言依頼→キュー消し込みをライブ実行して確認する。

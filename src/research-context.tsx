@@ -14,13 +14,18 @@ import {
   addAnchor as addAnchorToState,
   addNodes,
   addSource,
+  clearResolvedRequests,
+  enqueueRequest,
   loadState,
+  markQueueRead,
   replaceArticle as replaceArticleInState,
   removeAnchor as removeAnchorFromState,
   removeAnnotation as removeAnnotationFromState,
   removeCanvasItem as removeCanvasItemFromState,
+  removeRequest as removeRequestFromState,
   removeResearchNode as removeResearchNodeFromState,
   redo as redoState,
+  resolveRequest as resolveRequestInState,
   STORAGE_KEY,
   setCanvasView as setCanvasViewInState,
   toggleAnnotation as toggleAnnotationInState,
@@ -34,6 +39,8 @@ import type {
   BranchType,
   CanvasViewState,
   NodeInput,
+  PendingRequest,
+  RequestInput,
   ResearchAnchor,
   ResearchNode,
   ResearchSource,
@@ -53,6 +60,12 @@ export interface AnchorInput {
   suffix: string;
   startOffset: number;
   endOffset: number;
+}
+
+export interface RequestResolution {
+  status?: "done" | "skipped";
+  summary?: string;
+  appliedTo?: string[];
 }
 
 export interface CreateNodesCommand {
@@ -85,6 +98,10 @@ interface ResearchContextValue {
   removeResearchCard: (nodeId: string) => void;
   removeVisualizationCard: (itemId: string) => void;
   changeCanvasView: (input: Partial<CanvasViewState> & Pick<CanvasViewState, "type">, actor: Actor) => void;
+  queueRequest: (input: RequestInput) => PendingRequest;
+  resolveQueuedRequest: (requestId: string, resolution: RequestResolution) => PendingRequest;
+  removeQueuedRequest: (requestId: string) => void;
+  clearResolvedQueue: () => void;
   undo: () => void;
   redo: () => void;
 }
@@ -168,6 +185,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     stateRef.current = result.state;
     setState(result.state);
     setActiveAnchorId(command.anchorId);
+    if (actor === "agent") window.dispatchEvent(new CustomEvent("livingpage:open-layers"));
     flashActivity(actor === "agent" ? `Agent added ${result.nodes.length} branches` : "Research branch added");
     return result.nodes;
   }, [flashActivity]);
@@ -196,6 +214,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     stateRef.current = next;
     setState(next);
     setActiveAnchorId(input.anchorId);
+    if (actor === "agent") window.dispatchEvent(new CustomEvent("livingpage:open-layers"));
     flashActivity(actor === "agent" ? "Agent updated the Living Page" : "Living Page updated");
   }, [flashActivity]);
 
@@ -245,6 +264,47 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     flashActivity(actor === "agent" ? "Agent transformed the canvas" : "Canvas view changed");
   }, [flashActivity]);
 
+  const queueRequest = useCallback((input: RequestInput) => {
+    const result = enqueueRequest(stateRef.current, input);
+    stateRef.current = result.state;
+    setState(result.state);
+    setActiveAnchorId(input.anchorId);
+    window.dispatchEvent(new CustomEvent("livingpage:open-queue"));
+    flashActivity("Added to the request queue");
+    return result.request;
+  }, [flashActivity]);
+
+  const resolveQueuedRequest = useCallback((requestId: string, resolution: RequestResolution) => {
+    const result = resolveRequestInState(stateRef.current, requestId, resolution);
+    stateRef.current = result.state;
+    setState(result.state);
+    window.dispatchEvent(new CustomEvent("livingpage:open-queue"));
+    const remaining = result.state.requests.filter((request) => request.status === "pending").length;
+    flashActivity(remaining
+      ? `Agent resolved a request · ${remaining} left in the queue`
+      : "Agent cleared the request queue");
+    return result.request;
+  }, [flashActivity]);
+
+  const removeQueuedRequest = useCallback((requestId: string) => {
+    const next = removeRequestFromState(stateRef.current, requestId);
+    stateRef.current = next;
+    setState(next);
+    flashActivity("Request removed from the queue");
+  }, [flashActivity]);
+
+  const clearResolvedQueue = useCallback(() => {
+    const next = clearResolvedRequests(stateRef.current);
+    stateRef.current = next;
+    setState(next);
+  }, []);
+
+  const noteQueueRead = useCallback(() => {
+    const next = markQueueRead(stateRef.current);
+    stateRef.current = next;
+    setState(next);
+  }, []);
+
   const undo = useCallback(() => {
     const next = undoState(stateRef.current);
     stateRef.current = next;
@@ -284,6 +344,10 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     removeResearchCard,
     removeVisualizationCard,
     changeCanvasView,
+    queueRequest,
+    resolveQueuedRequest,
+    removeQueuedRequest,
+    clearResolvedQueue,
     undo,
     redo,
   }), [
@@ -305,6 +369,10 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     removeResearchCard,
     removeVisualizationCard,
     changeCanvasView,
+    queueRequest,
+    resolveQueuedRequest,
+    removeQueuedRequest,
+    clearResolvedQueue,
     undo,
     redo,
   ]);
@@ -317,11 +385,13 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
       addSource: (nodeId, source) => addSourceToNode(nodeId, source, "agent"),
       addAnnotation: (input) => addLivingAnnotation(input, "agent"),
       setCanvasView: (input) => changeCanvasView(input, "agent"),
+      markQueueRead: noteQueueRead,
+      resolveRequest: (requestId, resolution) => resolveQueuedRequest(requestId, resolution),
     };
     return () => {
       delete window.researchGarden;
     };
-  }, [createNodes, addSourceToNode, addLivingAnnotation, changeCanvasView]);
+  }, [createNodes, addSourceToNode, addLivingAnnotation, changeCanvasView, noteQueueRead, resolveQueuedRequest]);
 
   return <ResearchContext.Provider value={value}>{children}</ResearchContext.Provider>;
 }
@@ -341,6 +411,8 @@ declare global {
       addSource: (nodeId: string, source: SourceInput) => void;
       addAnnotation: (input: AnnotationInput) => void;
       setCanvasView: (input: Partial<CanvasViewState> & Pick<CanvasViewState, "type">) => void;
+      markQueueRead: () => void;
+      resolveRequest: (requestId: string, resolution: RequestResolution) => PendingRequest;
     };
   }
 }

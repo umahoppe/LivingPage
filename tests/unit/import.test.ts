@@ -48,6 +48,23 @@ describe("article import", () => {
     expect(article.blocks.map((block) => block.id)).toEqual(["imported-0", "imported-1"]);
   });
 
+  it("keeps in-article links as resolved offsets in the block text", async () => {
+    const linkFixture = `<!doctype html><html><head><title>Linked article</title></head><body><article>
+      <h1>Linked article</h1>
+      <p>The <a href="/reports/2026">annual mobility report</a> explains why the headline percentage needs a careful reading before anyone repeats it.</p>
+      <p>A second paragraph provides the additional context Readability needs, and links to <a href="javascript:alert(1)">an unsafe destination</a> that must be dropped.</p>
+    </article></body></html>`;
+    const article = await extractArticle(linkFixture, new URL("https://journal.example/story"));
+
+    const linked = article.blocks.find((block) => block.links?.length);
+    expect(linked).toBeDefined();
+    expect(linked!.links).toHaveLength(1);
+    const [link] = linked!.links!;
+    expect(link.url).toBe("https://journal.example/reports/2026");
+    expect(linked!.text.slice(link.start, link.end)).toBe("annual mobility report");
+    expect(article.blocks.some((block) => block.links?.some((item) => item.url.startsWith("javascript:")))).toBe(false);
+  });
+
   it("rejects local and non-HTTP destinations", () => {
     expect(() => validateImportUrl("http://127.0.0.1/private")).toThrow(/Private or local/);
     expect(() => validateImportUrl("http://192.168.1.2/private")).toThrow(/Private or local/);

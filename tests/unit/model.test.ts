@@ -3,12 +3,16 @@ import {
   addAnnotation,
   addAnchor,
   addNodes,
+  clearResolvedRequests,
   emptyState,
+  enqueueRequest,
   normalizeResearchState,
   redo,
   removeAnchor,
   removeCanvasItem,
+  removeRequest,
   removeResearchNode,
+  resolveRequest,
   setCanvasView,
   undo,
 } from "../../src/model";
@@ -167,5 +171,132 @@ describe("research graph model", () => {
     const removedImage = removeCanvasItem(visualized, "screen-a");
     expect(removedImage.document.canvasView.data.imageBoard).toHaveLength(1);
     expect(undo(removedImage).document.canvasView.data.imageBoard).toHaveLength(2);
+  });
+
+  it("stores a validated map canvas and removes markers reversibly", () => {
+    const mapped = setCanvasView(emptyState(), {
+      type: "map",
+      title: "Where the shortage is measured",
+      data: { map: {
+        markers: [
+          { id: "kobe", label: "Kobe", lat: 34.69, lng: 135.195, note: "Port cited in the report", sourceUrl: "https://example.com/kobe" },
+          { id: "busan", label: "Busan", lat: 35.1796, lng: 129.0756 },
+        ],
+        center: { lat: 34.9, lng: 132 },
+        zoom: 42,
+        focusMarkerId: "kobe",
+      } },
+    }, "agent");
+
+    const map = mapped.document.canvasView.data.map;
+    expect(mapped.document.canvasView.type).toBe("map");
+    expect(map?.markers).toHaveLength(2);
+    expect(map?.zoom).toBe(19);
+    expect(map?.focusMarkerId).toBe("kobe");
+
+    const removed = removeCanvasItem(mapped, "kobe");
+    expect(removed.document.canvasView.data.map?.markers).toHaveLength(1);
+    expect(removed.document.canvasView.data.map?.focusMarkerId).toBeUndefined();
+    expect(undo(removed).document.canvasView.data.map?.markers).toHaveLength(2);
+  });
+
+  it("rejects map markers that are not real coordinates", () => {
+    const mapWith = (markers: { id: string; label: string; lat: number; lng: number }[]) =>
+      setCanvasView(emptyState(), { type: "map", title: "Map", data: { map: { markers } } }, "agent");
+
+    expect(() => mapWith([{ id: "a", label: "Off world", lat: 120, lng: 0 }])).toThrow(/latitude/);
+    expect(() => mapWith([{ id: "a", label: "Off world", lat: 0, lng: 900 }])).toThrow(/longitude/);
+    expect(() => mapWith([{ id: "a", label: "", lat: 0, lng: 0 }])).toThrow(/label/);
+    expect(() => mapWith([
+      { id: "a", label: "One", lat: 0, lng: 0 },
+      { id: "a", label: "Two", lat: 1, lng: 1 },
+    ])).toThrow(/Duplicate/);
+  });
+});
+
+describe("reader request queue", () => {
+  function queued() {
+    const anchored = stateWithAnchor();
+    return enqueueRequest(anchored.state, {
+      anchorId: anchored.anchor.id,
+      intent: "explain",
+      prompt: "Explain this selection for a beginner.",
+    });
+  }
+
+  it("queues a marked passage without touching the research graph or the undo stack", () => {
+    const anchored = stateWithAnchor();
+    const before = anchored.state;
+    const { state, request } = enqueueRequest(before, {
+      anchorId: anchored.anchor.id,
+      intent: "verify",
+      prompt: "Verify this claim with reliable sources.",
+    });
+
+    expect(request.status).toBe("pending");
+    expect(state.requests).toHaveLength(1);
+    expect(state.document.revision).toBe(before.document.revision);
+    expect(state.undoStack).toHaveLength(before.undoStack.length);
+  });
+
+  it("rejects a request for an anchor that does not exist", () => {
+    expect(() => enqueueRequest(emptyState(), {
+      anchorId: "anchor_missing",
+      intent: "explain",
+      prompt: "Explain this.",
+    })).toThrow(/Unknown anchor/);
+  });
+
+  it("resolves a request once and refuses to resolve it twice", () => {
+    const { state, request } = queued();
+    const resolved = resolveRequest(state, request.id, { summary: "Added an inline explanation.", appliedTo: [] });
+
+    expect(resolved.request.status).toBe("done");
+    expect(resolved.request.resolutionSummary).toBe("Added an inline explanation.");
+    expect(resolved.state.requests.filter((item) => item.status === "pending")).toHaveLength(0);
+    expect(() => resolveRequest(resolved.state, request.id)).toThrow(/already done/);
+  });
+
+  it("keeps queued requests across a research commit and drops them with their anchor", () => {
+    const { state, request } = queued();
+    const grown = addNodes(
+      state,
+      request.anchorId,
+      [{ type: "verify", title: "Check the figure", summary: "Find the primary dataset." }],
+      "Agent grew a branch",
+      "agent",
+    );
+    expect(grown.state.requests).toHaveLength(1);
+
+    const withoutAnchor = removeAnchor(grown.state, request.anchorId);
+    expect(withoutAnchor.requests).toHaveLength(0);
+  });
+
+  it("drops a request when the anchor it points at is undone away", () => {
+    const anchored = stateWithAnchor();
+    const { state, request } = enqueueRequest(anchored.state, {
+      anchorId: anchored.anchor.id,
+      intent: "map",
+      prompt: "Map the places named here.",
+    });
+    expect(state.requests).toHaveLength(1);
+
+    const undone = undo(state);
+    expect(undone.document.anchors).toHaveLength(0);
+    expect(undone.requests).toHaveLength(0);
+    expect(request.anchorId).toBe(anchored.anchor.id);
+  });
+
+  it("removes one request by hand and clears only resolved ones", () => {
+    const first = queued();
+    const second = enqueueRequest(first.state, {
+      anchorId: first.request.anchorId,
+      intent: "research",
+      prompt: "Research what is missing here.",
+    });
+    const resolved = resolveRequest(second.state, first.request.id, { summary: "Explained beside the text." });
+
+    expect(clearResolvedRequests(resolved.state).requests.map((item) => item.id)).toEqual([second.request.id]);
+    expect(removeRequest(resolved.state, second.request.id).requests.map((item) => item.id)).toEqual([first.request.id]);
   });
 });

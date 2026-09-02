@@ -1,10 +1,14 @@
 import { useEffect, useState } from "react";
+import { getMapViewport } from "./map-viewport";
 import type {
   AnnotationInput,
   CanvasType,
   CanvasViewState,
   HighlightType,
+  MapViewData,
   NodeInput,
+  PendingRequest,
+  RequestIntent,
   ResearchState,
   SourceInput,
   VerificationStatus,
@@ -87,6 +91,7 @@ function getPageContext() {
     graphRevision: state?.document.revision ?? 0,
     canvasType: state?.document.canvasView.type,
     annotationCount: state?.document.annotations.length ?? 0,
+    pendingRequestCount: state?.requests.filter((request) => request.status === "pending").length ?? 0,
   };
 }
 
@@ -125,7 +130,72 @@ function getVisiblePageContext() {
     focusedResearchNodeIds: state.document.canvasView.focusedNodeIds,
     openPreview: Boolean(document.querySelector(".detail-panel")),
     canvasType: state.document.canvasView.type,
+    mapViewport: getMapViewport() ?? null,
+    pendingRequestCount: state.requests.filter((request) => request.status === "pending").length,
     revision: state.document.revision,
+  };
+}
+
+function getCanvasState() {
+  const canvasView = requireBridge().getState().document.canvasView;
+  if (canvasView.type !== "map") return canvasView;
+  const viewport = getMapViewport();
+  return {
+    ...canvasView,
+    mapViewport: viewport ?? null,
+    visibleMarkers: viewport
+      ? canvasView.data.map?.markers.filter((marker) => viewport.visibleMarkerIds.includes(marker.id)) ?? []
+      : canvasView.data.map?.markers ?? [],
+  };
+}
+
+const intentToolHints: Record<RequestIntent, string[]> = {
+  explain: ["insert_inline_explanation"],
+  simplify: ["insert_simplified_layer"],
+  visualize: ["create_visualization", "update_visualization"],
+  map: ["create_visualization", "set_map_view"],
+  research: ["create_research_nodes", "add_research_source"],
+  verify: ["add_verification", "add_research_source"],
+  custom: ["insert_inline_explanation", "create_research_nodes", "create_visualization"],
+};
+
+function describeRequest(state: ResearchState, request: PendingRequest) {
+  const anchor = state.document.anchors.find((candidate) => candidate.id === request.anchorId);
+  const annotations = state.document.annotations.filter((annotation) => annotation.anchorId === request.anchorId);
+  return {
+    requestId: request.id,
+    status: request.status,
+    intent: request.intent,
+    prompt: request.prompt,
+    note: request.note ?? null,
+    queuedAt: request.createdAt,
+    anchorId: request.anchorId,
+    blockId: anchor?.blockId ?? null,
+    quote: anchor?.quote ?? null,
+    surroundingContext: anchor ? `${anchor.prefix}${anchor.quote}${anchor.suffix}` : null,
+    suggestedTools: intentToolHints[request.intent],
+    existingLayers: [...new Set(annotations.map((annotation) => annotation.type))],
+    researchNodeCount: state.document.nodes.filter((node) => node.anchorId === request.anchorId).length,
+    resolutionSummary: request.resolutionSummary ?? null,
+    resolvedAt: request.resolvedAt ?? null,
+  };
+}
+
+function readPendingRequests(includeResolved: boolean, limit: number) {
+  const bridge = requireBridge();
+  const state = bridge.getState();
+  const pending = state.requests.filter((request) => request.status === "pending");
+  const selected = (includeResolved ? state.requests : pending).slice(0, limit);
+  bridge.markQueueRead();
+  return {
+    revision: state.document.revision,
+    articleTitle: state.document.article.title,
+    pendingCount: pending.length,
+    returnedCount: selected.length,
+    requests: selected.map((request) => describeRequest(state, request)),
+    nextStep: pending.length
+      ? "Work through the pending requests in order. Apply each one with the page-changing tool that fits its intent, then call resolve_request with its requestId so the reader sees it clear."
+      : "The reader has not marked anything yet. Ask them to select article text and choose an action from the selection menu.",
   };
 }
 
@@ -176,7 +246,7 @@ export function useWebMCP(): WebMCPStatus {
       {
         name: "get_visible_page_context",
         title: "Read visible Living Page state",
-        description: "Read the visible article context, inline layers, focus, preview, and current canvas view before changing the experience.",
+        description: "Read the visible article context, inline layers, focus, preview, current canvas view, and — when a Map canvas is open — the live map viewport, before changing the experience.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
         annotations: { readOnlyHint: true, untrustedContentHint: true },
         execute: async () => toolResult(getVisiblePageContext()),
@@ -184,10 +254,58 @@ export function useWebMCP(): WebMCPStatus {
       {
         name: "get_canvas_state",
         title: "Read visual canvas",
-        description: "Read the current Visual Thinking Canvas independently from the underlying research nodes and sources.",
+        description: "Read the current Visual Thinking Canvas independently from the underlying research nodes and sources. For a Map canvas this also reports the live viewport the reader is looking at: center, zoom, bounds, and the markers currently on screen.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
         annotations: { readOnlyHint: true, untrustedContentHint: true },
-        execute: async () => toolResult(requireBridge().getState().document.canvasView),
+        execute: async () => toolResult(getCanvasState()),
+      },
+      {
+        name: "get_pending_requests",
+        title: "Read the reader's request queue",
+        description: "Read the requests the reader queued by marking passages in the article. This is the reader's own list of what to do, in the order they marked it: each entry carries the intent, the exact anchored quote, its surrounding context, and the tools that fit. Call this first whenever the reader asks you to handle, process, or work through their marks — do not ask them to restate each request in chat.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            includeResolved: { type: "boolean", description: "Include already resolved requests. Defaults to false." },
+            limit: { type: "number", minimum: 1, maximum: 50, description: "Maximum requests to return. Defaults to 25." },
+          },
+          additionalProperties: false,
+        },
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        execute: async (input) => toolResult(readPendingRequests(
+          input.includeResolved === true,
+          Math.min(50, Math.max(1, Number(input.limit ?? 25))),
+        )),
+      },
+      {
+        name: "resolve_request",
+        title: "Clear one queued request",
+        description: "Mark one queued request as handled after you have actually changed the page for it, or as skipped when you could not. This removes it from the reader's pending queue, so call it once per request instead of reporting progress in chat.",
+        inputSchema: {
+          type: "object",
+          required: ["requestId"],
+          properties: {
+            requestId: { type: "string", description: "The requestId returned by get_pending_requests." },
+            status: { type: "string", enum: ["done", "skipped"], description: "Defaults to done. Use skipped when you made no change." },
+            summary: { type: "string", maxLength: 400, description: "One line on what you changed, or why you skipped it." },
+            appliedTo: {
+              type: "array",
+              maxItems: 20,
+              items: { type: "string" },
+              description: "IDs of the research nodes you created for this request.",
+            },
+          },
+          additionalProperties: false,
+        },
+        execute: async (input) => {
+          const resolved = requireBridge().resolveRequest(input.requestId as string, {
+            status: input.status as "done" | "skipped" | undefined,
+            summary: input.summary as string | undefined,
+            appliedTo: input.appliedTo as string[] | undefined,
+          });
+          const remaining = requireBridge().getState().requests.filter((request) => request.status === "pending").length;
+          return toolResult({ ok: true, requestId: resolved.id, status: resolved.status, pendingRemaining: remaining });
+        },
       },
       {
         name: "create_research_nodes",
@@ -404,12 +522,12 @@ export function useWebMCP(): WebMCPStatus {
       {
         name: "create_visualization",
         title: "Transform the visual canvas",
-        description: "Create the most useful Diagram, Timeline, Comparison, or Image Board from sourced research. Image Board data uses imageBoard items with id, title, imageUrl, note, sourceUrl, and sourceLabel. The underlying research data remains unchanged.",
+        description: "Create the most useful Diagram, Timeline, Comparison, Image Board, or Map from sourced research. Image Board data uses imageBoard items with id, title, imageUrl, note, sourceUrl, and sourceLabel. Map data uses map.markers items with id, label, lat, lng, note, kind, sourceUrl, sourceLabel, and sourceNodeIds, plus optional map.center {lat,lng}, map.zoom (1-19), and map.focusMarkerId; supply real WGS84 coordinates yourself, since the page does not geocode place names. The underlying research data remains unchanged.",
         inputSchema: {
           type: "object",
           required: ["type", "title", "data"],
           properties: {
-            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table", "image_board"] },
+            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table", "image_board", "map"] },
             title: { type: "string", maxLength: 120 },
             sourceNodeIds: { type: "array", items: { type: "string" }, maxItems: 30 },
             layout: { type: "string", maxLength: 60 },
@@ -432,13 +550,58 @@ export function useWebMCP(): WebMCPStatus {
         },
       },
       {
+        name: "set_map_view",
+        title: "Move the map",
+        description: "Pan, zoom, or focus the Map canvas without resending its markers. Use focusMarkerId to fly to one place, or center and zoom for an area. The Map canvas must already exist.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            center: {
+              type: "object",
+              required: ["lat", "lng"],
+              properties: {
+                lat: { type: "number", minimum: -90, maximum: 90 },
+                lng: { type: "number", minimum: -180, maximum: 180 },
+              },
+              additionalProperties: false,
+            },
+            zoom: { type: "number", minimum: 1, maximum: 19 },
+            focusMarkerId: { type: "string", description: "Id of a marker already on the map." },
+          },
+          additionalProperties: false,
+        },
+        execute: async (input) => {
+          const current = requireBridge().getState().document.canvasView;
+          const map = current.data.map;
+          if (!map?.markers.length) throw new Error("No map canvas exists yet. Create one with create_visualization first.");
+          const focusMarkerId = input.focusMarkerId as string | undefined;
+          if (focusMarkerId && !map.markers.some((marker) => marker.id === focusMarkerId)) {
+            throw new Error(`Unknown map marker: ${focusMarkerId}`);
+          }
+          requireBridge().setCanvasView({
+            ...current,
+            type: "map",
+            data: {
+              ...current.data,
+              map: {
+                ...map,
+                center: (input.center as MapViewData["center"] | undefined) ?? map.center,
+                zoom: (input.zoom as number | undefined) ?? map.zoom,
+                focusMarkerId,
+              },
+            },
+          });
+          return toolResult({ ok: true, focusMarkerId: focusMarkerId ?? null });
+        },
+      },
+      {
         name: "update_visualization",
         title: "Update the visual canvas",
         description: "Update or reframe the current visualization while preserving its source-linked research data.",
         inputSchema: {
           type: "object",
           properties: {
-            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table", "image_board"] },
+            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table", "image_board", "map"] },
             title: { type: "string", maxLength: 120 },
             sourceNodeIds: { type: "array", items: { type: "string" }, maxItems: 30 },
             layout: { type: "string", maxLength: 60 },

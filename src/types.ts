@@ -14,12 +14,19 @@ export type Actor = "human" | "agent";
 export type LivingAnnotationType = "explanation" | "simplification" | "highlight" | "verification";
 export type HighlightType = "important" | "claim" | "data" | "evidence" | "uncertain";
 export type VerificationStatus = "supported" | "mixed" | "unsupported" | "uncertain";
-export type CanvasType = "research_graph" | "diagram" | "timeline" | "comparison_table" | "image_board";
+export type CanvasType = "research_graph" | "diagram" | "timeline" | "comparison_table" | "image_board" | "map";
+
+export interface ArticleLink {
+  start: number;
+  end: number;
+  url: string;
+}
 
 export interface ArticleBlock {
   id: string;
   kind: "p" | "h2" | "quote";
   text: string;
+  links?: ArticleLink[];
 }
 
 export interface ArticleDocument {
@@ -122,11 +129,38 @@ export interface ImageBoardItem {
   sourceNodeIds?: string[];
 }
 
+export interface MapMarker {
+  id: string;
+  label: string;
+  lat: number;
+  lng: number;
+  note?: string;
+  kind?: "place" | "event" | "route_point" | "region" | "other";
+  sourceUrl?: string;
+  sourceLabel?: string;
+  sourceNodeIds?: string[];
+}
+
+export interface MapViewData {
+  markers: MapMarker[];
+  center?: { lat: number; lng: number };
+  zoom?: number;
+  focusMarkerId?: string;
+}
+
+export interface MapViewport {
+  center: { lat: number; lng: number };
+  zoom: number;
+  bounds: { north: number; south: number; east: number; west: number };
+  visibleMarkerIds: string[];
+}
+
 export interface VisualizationData {
   diagram?: { nodes: DiagramNode[]; edges: DiagramEdge[] };
   timeline?: TimelineItem[];
   comparison?: { columns: string[]; rows: ComparisonRow[] };
   imageBoard?: ImageBoardItem[];
+  map?: MapViewData;
 }
 
 export interface CanvasViewState {
@@ -173,8 +207,41 @@ export interface HistoryEntry {
   document: ResearchDocument;
 }
 
+export type RequestIntent =
+  | "explain"
+  | "simplify"
+  | "visualize"
+  | "map"
+  | "research"
+  | "verify"
+  | "custom";
+
+export type RequestStatus = "pending" | "done" | "skipped";
+
+export interface PendingRequest {
+  id: string;
+  anchorId: string;
+  intent: RequestIntent;
+  prompt: string;
+  note?: string;
+  createdAt: string;
+  status: RequestStatus;
+  resolvedAt?: string;
+  resolutionSummary?: string;
+  appliedTo: string[];
+}
+
+export interface RequestInput {
+  anchorId: string;
+  intent: RequestIntent;
+  prompt: string;
+  note?: string;
+}
+
 export interface ResearchState {
   document: ResearchDocument;
+  requests: PendingRequest[];
+  queueReadAt?: string;
   undoStack: HistoryEntry[];
   redoStack: HistoryEntry[];
 }

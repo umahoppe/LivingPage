@@ -4,7 +4,10 @@ import type {
   ArticleDocument,
   CanvasViewState,
   HistoryEntry,
+  MapViewData,
   NodeInput,
+  PendingRequest,
+  RequestInput,
   ResearchAnchor,
   ResearchDocument,
   ResearchNode,
@@ -37,6 +40,7 @@ export const emptyDocument = (): ResearchDocument => ({
 
 export const emptyState = (): ResearchState => ({
   document: emptyDocument(),
+  requests: [],
   undoStack: [],
   redoStack: [],
 });
@@ -99,11 +103,13 @@ function normalizeDocumentBlockIds(document: ResearchDocument): ResearchDocument
 }
 
 export function normalizeResearchState(state: ResearchState): ResearchState {
-  return {
+  return withLiveRequests({
+    ...state,
+    requests: state.requests ?? [],
     document: normalizeDocumentBlockIds(state.document),
     undoStack: state.undoStack.map((entry) => ({ ...entry, document: normalizeDocumentBlockIds(entry.document) })),
     redoStack: state.redoStack.map((entry) => ({ ...entry, document: normalizeDocumentBlockIds(entry.document) })),
-  };
+  });
 }
 
 export function commitDocument(
@@ -120,10 +126,77 @@ export function commitDocument(
   };
 
   return {
+    ...state,
     document: { ...nextDocument, revision: state.document.revision + 1 },
     undoStack: [...state.undoStack.slice(-29), history],
     redoStack: [],
   };
+}
+
+/**
+ * Requests live outside the research document on purpose: queueing a mark must
+ * never bump the graph revision an agent is holding as its baseRevision, and it
+ * must never land on the undo stack as a research change.
+ */
+export function withLiveRequests(state: ResearchState): ResearchState {
+  const anchorIds = new Set(state.document.anchors.map((anchor) => anchor.id));
+  const requests = state.requests.filter((request) => anchorIds.has(request.anchorId));
+  return requests.length === state.requests.length ? state : { ...state, requests };
+}
+
+export function enqueueRequest(
+  state: ResearchState,
+  input: RequestInput,
+): { state: ResearchState; request: PendingRequest } {
+  if (!state.document.anchors.some((anchor) => anchor.id === input.anchorId)) {
+    throw new Error(`Unknown anchor: ${input.anchorId}`);
+  }
+  const prompt = input.prompt.trim();
+  if (!prompt) throw new Error("A queued request needs a prompt");
+  const request: PendingRequest = {
+    id: makeId("request"),
+    anchorId: input.anchorId,
+    intent: input.intent,
+    prompt,
+    note: input.note?.trim() || undefined,
+    createdAt: new Date().toISOString(),
+    status: "pending",
+    appliedTo: [],
+  };
+  return { state: { ...state, requests: [...state.requests, request] }, request };
+}
+
+export function resolveRequest(
+  state: ResearchState,
+  requestId: string,
+  resolution: { status?: "done" | "skipped"; summary?: string; appliedTo?: string[] } = {},
+): { state: ResearchState; request: PendingRequest } {
+  const existing = state.requests.find((request) => request.id === requestId);
+  if (!existing) throw new Error(`Unknown request: ${requestId}`);
+  if (existing.status !== "pending") throw new Error(`Request ${requestId} is already ${existing.status}`);
+  const resolved: PendingRequest = {
+    ...existing,
+    status: resolution.status ?? "done",
+    resolvedAt: new Date().toISOString(),
+    resolutionSummary: resolution.summary?.trim() || undefined,
+    appliedTo: resolution.appliedTo ?? [],
+  };
+  return {
+    state: { ...state, requests: state.requests.map((request) => request.id === requestId ? resolved : request) },
+    request: resolved,
+  };
+}
+
+export function removeRequest(state: ResearchState, requestId: string): ResearchState {
+  return { ...state, requests: state.requests.filter((request) => request.id !== requestId) };
+}
+
+export function clearResolvedRequests(state: ResearchState): ResearchState {
+  return { ...state, requests: state.requests.filter((request) => request.status === "pending") };
+}
+
+export function markQueueRead(state: ResearchState): ResearchState {
+  return { ...state, queueReadAt: new Date().toISOString() };
 }
 
 export function addAnchor(
@@ -166,7 +239,7 @@ export function replaceArticle(state: ResearchState, article: ArticleDocument): 
       data: {},
     },
   });
-  return commitDocument(state, next, `Imported article: ${article.title}`, "human");
+  return withLiveRequests(commitDocument(state, next, `Imported article: ${article.title}`, "human"));
 }
 
 function validateAnnotationSources(input: AnnotationInput) {
@@ -270,11 +343,11 @@ export function removeAnchor(state: ResearchState, anchorId: string): ResearchSt
   if (!state.document.anchors.some((anchor) => anchor.id === anchorId)) return state;
   const removedIds = new Set(state.document.nodes.filter((node) => node.anchorId === anchorId).map((node) => node.id));
   const cleaned = withoutNodeReferences(state.document, removedIds);
-  return commitDocument(state, {
+  return withLiveRequests(commitDocument(state, {
     ...cleaned,
     anchors: cleaned.anchors.filter((anchor) => anchor.id !== anchorId),
     annotations: cleaned.annotations.filter((annotation) => annotation.anchorId !== anchorId),
-  }, "Removed an article anchor and its layers", "human");
+  }, "Removed an article anchor and its layers", "human"));
 }
 
 export function removeCanvasItem(state: ResearchState, itemId: string): ResearchState {
@@ -291,6 +364,11 @@ export function removeCanvasItem(state: ResearchState, itemId: string): Research
       rows: data.comparison.rows.filter((row, index) => (row.id ?? `row-${index}`) !== itemId),
     } : undefined,
     imageBoard: data.imageBoard?.filter((item) => item.id !== itemId),
+    map: data.map ? {
+      ...data.map,
+      markers: data.map.markers.filter((marker) => marker.id !== itemId),
+      focusMarkerId: data.map.focusMarkerId === itemId ? undefined : data.map.focusMarkerId,
+    } : undefined,
   };
   return commitDocument(state, {
     ...state.document,
@@ -310,7 +388,46 @@ function validatedCanvasData(data: CanvasViewState["data"]) {
     }
     return { ...item, imageUrl: imageUrl.toString(), sourceUrl };
   });
-  return { ...data, imageBoard };
+  return { ...data, imageBoard, map: data.map ? validatedMapData(data.map) : undefined };
+}
+
+const MAX_MAP_MARKERS = 250;
+
+function validatedCoordinate(lat: unknown, lng: unknown, label: string) {
+  const latitude = Number(lat);
+  const longitude = Number(lng);
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
+    throw new Error(`${label} needs a latitude between -90 and 90`);
+  }
+  if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+    throw new Error(`${label} needs a longitude between -180 and 180`);
+  }
+  return { lat: latitude, lng: longitude };
+}
+
+function validatedMapData(map: MapViewData): MapViewData {
+  const markers = map.markers ?? [];
+  if (markers.length > MAX_MAP_MARKERS) throw new Error(`A map holds at most ${MAX_MAP_MARKERS} markers`);
+  const seen = new Set<string>();
+  const validated = markers.map((marker, index) => {
+    const id = marker.id || `marker-${index}`;
+    if (seen.has(id)) throw new Error(`Duplicate map marker id: ${id}`);
+    seen.add(id);
+    if (!marker.label?.trim()) throw new Error(`Map marker ${id} needs a label`);
+    const { lat, lng } = validatedCoordinate(marker.lat, marker.lng, `Map marker ${id}`);
+    let sourceUrl: string | undefined;
+    if (marker.sourceUrl) {
+      const parsed = new URL(marker.sourceUrl);
+      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error(`Unsupported source URL protocol: ${parsed.protocol}`);
+      sourceUrl = parsed.toString();
+    }
+    return { ...marker, id, lat, lng, sourceUrl };
+  });
+  const center = map.center ? validatedCoordinate(map.center.lat, map.center.lng, "Map center") : undefined;
+  const zoom = map.zoom === undefined ? undefined : Math.min(19, Math.max(1, Math.round(Number(map.zoom))));
+  if (zoom !== undefined && !Number.isFinite(zoom)) throw new Error("Map zoom must be a number between 1 and 19");
+  const focusMarkerId = map.focusMarkerId && seen.has(map.focusMarkerId) ? map.focusMarkerId : undefined;
+  return { markers: validated, center, zoom, focusMarkerId };
 }
 
 export function setCanvasView(
@@ -440,11 +557,12 @@ export function undo(state: ResearchState): ResearchState {
     timestamp: new Date().toISOString(),
     document: snapshot(state.document),
   };
-  return {
+  return withLiveRequests({
+    ...state,
     document: previous.document,
     undoStack: state.undoStack.slice(0, -1),
     redoStack: [...state.redoStack, redoEntry],
-  };
+  });
 }
 
 export function redo(state: ResearchState): ResearchState {
@@ -456,11 +574,12 @@ export function redo(state: ResearchState): ResearchState {
     timestamp: new Date().toISOString(),
     document: snapshot(state.document),
   };
-  return {
+  return withLiveRequests({
+    ...state,
     document: next.document,
     undoStack: [...state.undoStack, undoEntry],
     redoStack: state.redoStack.slice(0, -1),
-  };
+  });
 }
 
 export function loadState(): ResearchState {
