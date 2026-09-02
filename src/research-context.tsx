@@ -12,6 +12,7 @@ import {
 import {
   addAnnotation as addAnnotationToState,
   addAnchor as addAnchorToState,
+  anchorPassage as anchorPassageInState,
   addNodes,
   addSource,
   clearResolvedRequests,
@@ -34,6 +35,7 @@ import {
 } from "./model";
 import type {
   Actor,
+  AnchorPassageInput,
   AnnotationInput,
   ArticleDocument,
   BranchType,
@@ -85,6 +87,7 @@ interface ResearchContextValue {
   setActiveAnchorId: (id: string) => void;
   setSelectedNodeId: (id?: string) => void;
   createAnchor: (input: AnchorInput) => ResearchAnchor;
+  anchorPassageForRequest: (input: AnchorPassageInput) => { anchor: ResearchAnchor; alreadyExisted: boolean };
   setCurrentSelection: (selection?: LiveSelection) => void;
   replaceArticle: (article: ArticleDocument) => void;
   createNodes: (command: CreateNodesCommand, actor: Actor) => ResearchNode[];
@@ -159,6 +162,22 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     setActiveAnchorId(result.anchor.id);
     flashActivity("Research anchor added");
     return result.anchor;
+  }, [flashActivity]);
+
+  /**
+   * The agent-side anchor. It is reachable only through the WebMCP bridge, and only
+   * for a request the reader queued: the model rejects anything else.
+   */
+  const anchorPassageForRequest = useCallback((input: AnchorPassageInput) => {
+    const result = anchorPassageInState(stateRef.current, input);
+    stateRef.current = result.state;
+    setState(result.state);
+    setActiveAnchorId(result.anchor.id);
+    if (!result.alreadyExisted) {
+      window.dispatchEvent(new CustomEvent("livingpage:open-layers"));
+      flashActivity("Agent anchored a passage");
+    }
+    return { anchor: result.anchor, alreadyExisted: result.alreadyExisted };
   }, [flashActivity]);
 
   const replaceArticle = useCallback((article: ArticleDocument) => {
@@ -268,7 +287,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     const result = enqueueRequest(stateRef.current, input);
     stateRef.current = result.state;
     setState(result.state);
-    setActiveAnchorId(input.anchorId);
+    if (result.request.anchorId) setActiveAnchorId(result.request.anchorId);
     window.dispatchEvent(new CustomEvent("livingpage:open-queue"));
     flashActivity("Added to the request queue");
     return result.request;
@@ -331,6 +350,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     setActiveAnchorId,
     setSelectedNodeId,
     createAnchor,
+    anchorPassageForRequest,
     setCurrentSelection,
     replaceArticle,
     createNodes,
@@ -357,6 +377,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     activity,
     currentSelection,
     createAnchor,
+    anchorPassageForRequest,
     replaceArticle,
     createNodes,
     addSourceToNode,
@@ -381,6 +402,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     window.researchGarden = {
       getState: () => stateRef.current,
       getSelection: () => currentSelectionRef.current,
+      anchorPassage: (input) => anchorPassageForRequest(input),
       createNodes: (command) => createNodes(command, "agent"),
       addSource: (nodeId, source) => addSourceToNode(nodeId, source, "agent"),
       addAnnotation: (input) => addLivingAnnotation(input, "agent"),
@@ -391,7 +413,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     return () => {
       delete window.researchGarden;
     };
-  }, [createNodes, addSourceToNode, addLivingAnnotation, changeCanvasView, noteQueueRead, resolveQueuedRequest]);
+  }, [anchorPassageForRequest, createNodes, addSourceToNode, addLivingAnnotation, changeCanvasView, noteQueueRead, resolveQueuedRequest]);
 
   return <ResearchContext.Provider value={value}>{children}</ResearchContext.Provider>;
 }
@@ -407,6 +429,7 @@ declare global {
     researchGarden?: {
       getState: () => ResearchState;
       getSelection: () => LiveSelection | undefined;
+      anchorPassage: (input: AnchorPassageInput) => { anchor: ResearchAnchor; alreadyExisted: boolean };
       createNodes: (command: CreateNodesCommand) => ResearchNode[];
       addSource: (nodeId: string, source: SourceInput) => void;
       addAnnotation: (input: AnnotationInput) => void;

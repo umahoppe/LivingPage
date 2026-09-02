@@ -81,3 +81,25 @@ Original prompt: 添付の開発指示書を起点に、Canvasではなく閲覧
 - 検証: unit 18/18、Playwright E2E 6/6、ESLint、TypeScript、production build成功。新規E2Eは3か所を別intentでマークし、クリップボードが空のままであること、`get_pending_requests`が3件を順序どおり返すこと、Agent既読表示、explain / verifyの適用と1件skip、pendingが0になること、Reload後もResolved履歴が残りClearできること、console error 0を確認した。
 - 未完: Staged Agent Changes、Profile UI、Chart / Pros-Cons / Visual Summary、公開環境でのWebMCPライブ呼び出しとRequest Queueの実機確認。
 - 次アクション: Sitesへ再デプロイし、WebMCP対応ブラウザで複数マーク→一言依頼→キュー消し込みをライブ実行して確認する。
+
+## 2026-09-02 — Living Page Loop 7
+
+- 設計: Anchorを人間専用のままにするか検討し、「人間の依頼から派生する場合に限りAIも打てる」方式を採用した。読者がまだ気づいていない箇所（記事全体への問い、根拠が別段落にある場合、網羅的な検証）は人間の選択だけでは表現できないが、Agentの自律Anchorは「Layersが自分の注意の記録である」という前提を壊すため、起点は常に人間の未処理Requestに固定した。
+- 完了: `PendingRequest.anchorId`をnullableにし、Ask Barで何も選択していないときの入力を記事スコープのRequestとしてキューへ入れられるようにした。Queueカードは「Whole article · your agent anchors what it answers」と表示し、Anchor削除でも落ちない。
+- 完了: WebMCPへ`anchor_passage`と`get_article_blocks`を追加した。前者は未処理の`requestId`必須で、Agentは引用文だけを渡し、ページ側が空白差を吸収してBlock内の位置・prefix・suffixを解決する。記事に存在しない引用は拒否するため、捏造した文をAnchorにできない。1 Requestあたり上限10件、`occurrence`と`blockId`で重複箇所を指定できる。読者自身のAnchorと一致する場合は複製せず既存Anchorを返す。
+- 完了: `ResearchAnchor`へ`createdBy`と`requestId`を追加し、保存済みデータのAnchorは読み込み時に`human`へ移行する。Layersタブで「Agent anchored」バッジを表示し、削除・Cascade・Undoは既存のAnchorと同一経路にした。`get_pending_requests`は`scope`、`scopeNote`、`derivedAnchorIds`、`anchorBudgetLeft`を返し、Handoff Promptにも記事スコープの手順を追記した。
+- 検証: unit 25/25、Playwright E2E 8/8、ESLint、TypeScript、production build、`git diff --check`成功。新規E2Eは選択なしの依頼→`get_article_blocks`→`anchor_passage`→`add_verification`→`resolve_request`を実ツールで通し、Offset一致、Agent帰属、捏造引用の拒否、未登録requestIdの拒否、解決後の再Anchor拒否、Reload復元、Undoを確認した。実ブラウザでも記事スコープ依頼→Agent Anchor→Inline Verification→「Agent anchored」バッジ表示とconsole error 0を確認した。
+- 未完: Staged Agent Changes、Profile UI、Chart / Pros-Cons / Visual Summary、公開環境でのWebMCPライブ呼び出しと`anchor_passage`の実機確認。
+- 次アクション: Sitesへ再デプロイし、WebMCP対応ブラウザで記事全体への依頼をライブ実行してAgent Anchorを確認する。
+
+## 2026-09-02 — Living Page Loop 8
+
+- 設計: fable提案のサンドボックス実行Canvasを採用し、Canvas Type `interactive`として実装した。エージェントが自己完結HTML+JSを送り、ページは隔離iframeで実行する。Artifacts / Canvasと同じ方式のため、審査員へ一文で説明できる。
+- 完了: `create_visualization` / `update_visualization`を`interactive`対応にした。`data.interactive`は`id` / `title` / `note` / `sourceNodeIds` / `html`。Canvas切替へ「Interact」タブを追加し、Reset（フレーム再構築）、Remove、Undoを用意した。
+- 安全性: `sandbox="allow-scripts"`のみを付与し`allow-same-origin`を与えないため、iframeはopaque originとなり親のDOM・localStorage・Cookieへ触れない。srcdoc内のCSP metaは`default-src 'none'`で、fetch・外部script / stylesheet・外部画像 / font・form送信をすべて遮断する。読み込めないと分かっている外部参照（script / link / iframe / object / embedのhttp(s)・protocol-relative URL）はツール境界で拒否し、HTMLは60,000文字上限とした。
+- 完了: 双方向にした。フレーム内の`livingPage.setState(value)`が`postMessage`で親へ値を渡し、親は`event.source`一致とJSON 4,000文字上限を検証して保持する。`get_canvas_state`が`interactiveState`として、`get_visible_page_context`も同じ値を返すため、エージェントは読者が動かしたスライダーの位置から答えられる。`readerFocus`もInteractive Canvasを報告する。
+- 設計: Map Viewportと同じく、読者の操作状態はResearch Documentの外（モジュール内シングルトン）に置いた。revisionを進めず、Undo Stackにも載らず、フレーム破棄・Reset・Removeで消える。
+- 完了: フレームは自分の高さを`ResizeObserver`で報告し、親が140〜1,200pxへclampする。フレーム内のエラーはカード下に表示する。
+- 検証: unit 34/34、Playwright E2E 9/9、ESLint、TypeScript、production build成功。新規E2Eはエージェントがスライダーwidgetを送り、読者としてスライダーを操作し、`get_canvas_state`で値と「親document・localStorageへ到達できない」自己プローブを読み戻し、外部script参照の拒否、Resetでの状態クリア、Remove→Undoを確認した。console error 0。
+- 未完: Staged Agent Changes、Profile UI、Chart / Pros-Cons / Visual Summary、公開環境でのWebMCPライブ呼び出しとInteractive Canvasの実機確認。
+- 次アクション: Sitesへ再デプロイし、WebMCP対応ブラウザで`create_visualization(type:"interactive")`をライブ実行して、読者操作→`get_canvas_state`の往復を確認する。

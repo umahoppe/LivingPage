@@ -3,6 +3,7 @@ import {
   addAnnotation,
   addAnchor,
   addNodes,
+  anchorPassage,
   clearResolvedRequests,
   emptyState,
   enqueueRequest,
@@ -11,6 +12,8 @@ import {
   removeAnchor,
   removeCanvasItem,
   removeRequest,
+  MAX_DERIVED_ANCHORS_PER_REQUEST,
+  MAX_INTERACTIVE_HTML_CHARACTERS,
   removeResearchNode,
   resolveRequest,
   setCanvasView,
@@ -96,6 +99,7 @@ describe("research graph model", () => {
       startOffset: 0,
       endOffset: 11,
       createdAt: "2026-09-01T00:00:00.000Z",
+      createdBy: "human",
     }];
 
     const normalized = normalizeResearchState(state);
@@ -200,6 +204,46 @@ describe("research graph model", () => {
     expect(undo(removed).document.canvasView.data.map?.markers).toHaveLength(2);
   });
 
+  it("stores a self-contained interactive canvas and removes it reversibly", () => {
+    const built = setCanvasView(emptyState(), {
+      type: "interactive",
+      title: "Battery cost model",
+      data: { interactive: {
+        id: "cost-model",
+        title: "  Battery cost model  ",
+        html: "<label>Cost</label><input type=\"range\"><script>livingPage.setState({ cost: 90 });</script>",
+        note: "Move the slider to see the break-even year.",
+        sourceNodeIds: ["node-a"],
+      } },
+    }, "agent");
+
+    const interactive = built.document.canvasView.data.interactive;
+    expect(built.document.canvasView.type).toBe("interactive");
+    expect(interactive?.title).toBe("Battery cost model");
+    expect(interactive?.sourceNodeIds).toEqual(["node-a"]);
+
+    const removed = removeCanvasItem(built, "cost-model");
+    expect(removed.document.canvasView.data.interactive).toBeUndefined();
+    expect(undo(removed).document.canvasView.data.interactive?.id).toBe("cost-model");
+  });
+
+  it("rejects interactive canvases that are oversized or reach outside their sandbox", () => {
+    const interactiveWith = (view: { id?: string; title: string; html: string }) =>
+      setCanvasView(emptyState(), { type: "interactive", title: "Widget", data: { interactive: { id: "w", ...view } } }, "agent");
+
+    expect(() => interactiveWith({ title: "", html: "<p>hi</p>" })).toThrow(/title/);
+    expect(() => interactiveWith({ title: "Widget", html: "   " })).toThrow(/html/);
+    expect(() => interactiveWith({ title: "Widget", html: "x".repeat(MAX_INTERACTIVE_HTML_CHARACTERS + 1) })).toThrow(/limited/);
+    expect(() => interactiveWith({
+      title: "Widget",
+      html: '<script src="https://cdn.example/chart.js"></script>',
+    })).toThrow(/self-contained/);
+    expect(() => interactiveWith({
+      title: "Widget",
+      html: '<link rel="stylesheet" href="//cdn.example/app.css">',
+    })).toThrow(/self-contained/);
+  });
+
   it("rejects map markers that are not real coordinates", () => {
     const mapWith = (markers: { id: string; label: string; lat: number; lng: number }[]) =>
       setCanvasView(emptyState(), { type: "map", title: "Map", data: { map: { markers } } }, "agent");
@@ -261,14 +305,14 @@ describe("reader request queue", () => {
     const { state, request } = queued();
     const grown = addNodes(
       state,
-      request.anchorId,
+      request.anchorId!,
       [{ type: "verify", title: "Check the figure", summary: "Find the primary dataset." }],
       "Agent grew a branch",
       "agent",
     );
     expect(grown.state.requests).toHaveLength(1);
 
-    const withoutAnchor = removeAnchor(grown.state, request.anchorId);
+    const withoutAnchor = removeAnchor(grown.state, request.anchorId!);
     expect(withoutAnchor.requests).toHaveLength(0);
   });
 
@@ -298,5 +342,115 @@ describe("reader request queue", () => {
 
     expect(clearResolvedRequests(resolved.state).requests.map((item) => item.id)).toEqual([second.request.id]);
     expect(removeRequest(resolved.state, second.request.id).requests.map((item) => item.id)).toEqual([first.request.id]);
+  });
+});
+
+describe("agent-derived anchors", () => {
+  function documentRequest() {
+    return enqueueRequest(emptyState(), {
+      anchorId: null,
+      intent: "verify",
+      prompt: "Verify every statistic in this article.",
+    });
+  }
+
+  it("keeps a document-scoped request even though it owns no anchor", () => {
+    const { state, request } = documentRequest();
+    expect(request.anchorId).toBeNull();
+    expect(normalizeResearchState(state).requests).toHaveLength(1);
+  });
+
+  it("resolves a verbatim quote to a real range and records the agent as its author", () => {
+    const { state, request } = documentRequest();
+    const anchored = anchorPassage(state, {
+      requestId: request.id,
+      quote: "Global EV sales increased by 20% year over year",
+    });
+    const { anchor } = anchored;
+    const block = anchored.state.document.article.blocks.find((candidate) => candidate.id === anchor.blockId)!;
+
+    expect(anchor.createdBy).toBe("agent");
+    expect(anchor.requestId).toBe(request.id);
+    expect(anchor.blockId).toBe("claim-growth");
+    expect(block.text.slice(anchor.startOffset, anchor.endOffset)).toBe(anchor.quote);
+    expect(anchored.state.undoStack.at(-1)?.label).toBe("Agent anchored a passage");
+  });
+
+  it("tolerates whitespace differences but refuses a quote the article does not contain", () => {
+    const { state, request } = documentRequest();
+    const anchored = anchorPassage(state, {
+      requestId: request.id,
+      quote: "  Lower battery costs,\n  expanding model choice  ",
+    });
+    expect(anchored.anchor.blockId).toBe("market-context");
+    expect(anchored.anchor.quote).toBe("Lower battery costs, expanding model choice");
+
+    expect(() => anchorPassage(state, {
+      requestId: request.id,
+      quote: "Global EV sales fell by 40% after the subsidy ended",
+    })).toThrow(/does not appear in the article/);
+  });
+
+  it("refuses to anchor without a pending request from the reader", () => {
+    const { state, request } = documentRequest();
+    expect(() => anchorPassage(state, { requestId: "request_missing", quote: "Global EV sales" }))
+      .toThrow(/Unknown request/);
+
+    const resolved = resolveRequest(state, request.id, { summary: "Answered." });
+    expect(() => anchorPassage(resolved.state, { requestId: request.id, quote: "Global EV sales" }))
+      .toThrow(/already done/);
+  });
+
+  it("reuses the reader's own anchor instead of duplicating it", () => {
+    const reader = stateWithAnchor();
+    const { state, request } = enqueueRequest(reader.state, {
+      anchorId: null,
+      intent: "verify",
+      prompt: "Verify every statistic in this article.",
+    });
+    const anchored = anchorPassage(state, {
+      requestId: request.id,
+      quote: "Global EV sales increased by 20% year over year",
+    });
+
+    expect(anchored.alreadyExisted).toBe(true);
+    expect(anchored.anchor.id).toBe(reader.anchor.id);
+    expect(anchored.anchor.createdBy).toBe("human");
+    expect(anchored.state.document.anchors).toHaveLength(1);
+  });
+
+  it("caps how many anchors one request can produce", () => {
+    const { state, request } = documentRequest();
+    const words = [
+      "The electric vehicle market", "Global adoption continues to rise", "sharp differences between regions",
+      "Global EV sales increased", "the transition has regained momentum", "Lower battery costs",
+      "expanding model choice", "purchase incentives", "where the boundary is drawn",
+      "which vehicles are counted", "Growth is not evenly distributed",
+    ];
+    expect(words.length).toBeGreaterThan(MAX_DERIVED_ANCHORS_PER_REQUEST);
+
+    let current = state;
+    for (const quote of words.slice(0, MAX_DERIVED_ANCHORS_PER_REQUEST)) {
+      current = anchorPassage(current, { requestId: request.id, quote }).state;
+    }
+    expect(current.document.anchors).toHaveLength(MAX_DERIVED_ANCHORS_PER_REQUEST);
+    expect(() => anchorPassage(current, { requestId: request.id, quote: words[MAX_DERIVED_ANCHORS_PER_REQUEST] }))
+      .toThrow(/already has 10 agent anchors/);
+  });
+
+  it("removes an agent anchor and its layers like any other", () => {
+    const { state, request } = documentRequest();
+    const anchored = anchorPassage(state, { requestId: request.id, quote: "Growth is not evenly distributed" });
+    const annotated = addAnnotation(anchored.state, {
+      anchorId: anchored.anchor.id,
+      type: "verification",
+      status: "mixed",
+      content: "The direction holds, the size depends on the dataset.",
+    }, "agent");
+
+    const removed = removeAnchor(annotated, anchored.anchor.id);
+    expect(removed.document.anchors).toHaveLength(0);
+    expect(removed.document.annotations).toHaveLength(0);
+    expect(removed.requests).toHaveLength(1);
   });
 });

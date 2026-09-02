@@ -130,6 +130,95 @@ test("an agent reads an anchor and grows missing research branches", async ({ pa
   expect(consoleErrors).toEqual([]);
 });
 
+test("an anchor previews its layers before opening the panel or linked canvas", async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await installWebMCPStub(page);
+  await page.goto("/");
+  await expect(page.getByText("WebMCP tools registered")).toBeVisible();
+
+  await page.locator('[data-block-id="claim-growth"]').scrollIntoViewIfNeeded();
+  await page.locator('[data-block-id="claim-growth"]').evaluate((element) => {
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    range.setStart(element.firstChild!, 0);
+    range.setEnd(element.firstChild!, 49);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.getByRole("button", { name: "Grow research here" }).click();
+
+  await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const selectionResult = await tools.get_current_selection.execute({});
+    const selection = JSON.parse(selectionResult.content[0].text) as { associatedAnchorId: string };
+    const layerResult = await tools.get_research_layer.execute({ anchorId: selection.associatedAnchorId });
+    const layer = JSON.parse(layerResult.content[0].text) as { revision: number };
+    const createdResult = await tools.create_research_nodes.execute({
+      anchorId: selection.associatedAnchorId,
+      baseRevision: layer.revision,
+      operationId: "anchor-peek-e2e",
+      operationLabel: "Add preview research",
+      nodes: [{
+        type: "why",
+        title: "Growth is concentrated, not uniform",
+        summary: "The global increase can coexist with slower adoption in markets where incentives ended.",
+      }],
+    });
+    const created = JSON.parse(createdResult.content[0].text) as { createdNodeIds: string[] };
+    await tools.create_visualization.execute({
+      type: "map",
+      title: "Markets behind the headline",
+      sourceNodeIds: created.createdNodeIds,
+      data: { map: { markers: [{
+        id: "china",
+        label: "China",
+        lat: 35.8617,
+        lng: 104.1954,
+        note: "A major contributor to the global total",
+        sourceNodeIds: created.createdNodeIds,
+      }] } },
+      config: {},
+    });
+  });
+
+  await page.getByRole("button", { name: "Close research panel" }).click();
+  const mark = page.locator(".research-mark").first();
+  await mark.hover();
+  const preview = page.getByRole("dialog", { name: /Research attached to/ });
+  await expect(preview).toBeVisible();
+  await expect(preview.getByText("1 research card", { exact: true })).toBeVisible();
+  await expect(preview.getByText("Growth is concentrated, not uniform", { exact: true })).toBeVisible();
+  await expect(page.getByRole("complementary")).toHaveCount(0);
+
+  await mark.click({ position: { x: 8, y: 8 } });
+  await page.mouse.move(5, 5);
+  await page.waitForTimeout(300);
+  await expect(preview).toBeVisible();
+  await preview.getByRole("button", { name: "Open in Layers" }).click();
+  await expect(page.getByRole("complementary", { name: "Living Page layers" })).toBeVisible();
+  await expect(preview).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Close research panel" }).click();
+  await mark.click({ position: { x: 8, y: 8 } });
+  await page.getByRole("button", { name: "Open Map" }).click();
+  await expect(page.getByRole("complementary", { name: "Visual Thinking Canvas" })).toBeVisible();
+  await expect(page.locator('[data-canvas-type="map"]')).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("complementary")).toHaveCount(0);
+  await page.getByRole("button", { name: /Preview research for/ }).click();
+  const sheetBox = await preview.boundingBox();
+  expect(sheetBox).not.toBeNull();
+  expect(sheetBox!.x).toBeGreaterThanOrEqual(0);
+  expect(sheetBox!.x + sheetBox!.width).toBeLessThanOrEqual(390);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+  expect(consoleErrors).toEqual([]);
+});
+
 test("imports a public article and exposes its context to WebMCP", async ({ page }) => {
   await installWebMCPStub(page);
   await page.route("**/api/import", async (route) => {
@@ -248,7 +337,7 @@ test("an agent transforms a selection into a sourced Living Page and visual canv
             { id: "scope", label: "Define scope", description: "Period, geography, and vehicle type" },
             { id: "evidence", label: "Check source", description: "Compare with the primary dataset" },
           ],
-          edges: [{ from: "claim", to: "scope" }, { from: "scope", to: "evidence" }],
+          edges: [{ from: "claim", to: "scope", label: "needs scoping" }, { from: "scope", to: "evidence" }],
         },
       },
       config: {},
@@ -268,6 +357,24 @@ test("an agent transforms a selection into a sourced Living Page and visual canv
   await expect(page.locator(".research-mark.highlight-claim")).toHaveCount(1);
   await expect(page.locator('[data-canvas-type="diagram"]')).toBeVisible();
   await expect(page.getByText("20% growth claim")).toBeVisible();
+  await expect(page.locator(".diagram-edge")).toHaveCount(2);
+  await expect(page.locator(".diagram-edge-label")).toHaveText(["needs scoping"]);
+  await expect(page.locator('[data-diagram-direction="vertical"]')).toBeVisible();
+
+  // The reader opens a card; the agent can read which one without being told its name.
+  await page.locator('[data-diagram-node-id="scope"] button').first().click();
+  const focus = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const canvasResult = await tools.get_canvas_state.execute({});
+    const visibleResult = await tools.get_visible_page_context.execute({});
+    return {
+      canvas: JSON.parse(canvasResult.content[0].text) as { readerFocus: { canvasType: string; itemId: string; label: string } | null },
+      visible: JSON.parse(visibleResult.content[0].text) as { readerFocus: { itemId: string } | null },
+    };
+  });
+  expect(focus.canvas.readerFocus).toMatchObject({ canvasType: "diagram", itemId: "scope", label: "Define scope" });
+  expect(focus.visible.readerFocus?.itemId).toBe("scope");
+
 
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(page.locator('[data-canvas-type="diagram"]')).toHaveCount(0);
@@ -278,6 +385,14 @@ test("an agent transforms a selection into a sourced Living Page and visual canv
   await expect(page.locator(".anchor-inline-list").getByText("Why this number needs context")).toBeVisible();
   await page.getByRole("tab", { name: "Canvas", exact: false }).click();
   await expect(page.locator('[data-canvas-type="diagram"]')).toBeVisible();
+
+  // The agent can flip the reading direction without resending the graph.
+  await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    await tools.update_visualization.execute({ layout: "horizontal" });
+  });
+  await expect(page.locator('[data-diagram-direction="horizontal"]')).toBeVisible();
+  await expect(page.locator(".diagram-edge")).toHaveCount(2);
   expect(consoleErrors).toEqual([]);
 });
 
@@ -538,5 +653,305 @@ test("marks pile up in an in-page queue that the agent reads and clears", async 
   await page.getByRole("button", { name: "Clear", exact: true }).click();
   await expect(page.locator(".queue-resolved-row")).toHaveCount(0);
 
+  expect(consoleErrors).toEqual([]);
+});
+
+test("a Compare mark reaches the canvas without any research registered first", async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await installWebMCPStub(page);
+  await page.goto("/");
+  await expect(page.getByText("WebMCP tools registered")).toBeVisible();
+
+  // The empty Compare canvas must not tell the reader to grow research first.
+  await page.getByRole("tab", { name: /Canvas/ }).click();
+  await page.getByRole("button", { name: "Compare" }).click();
+  await expect(page.getByText("No comparison yet")).toBeVisible();
+  await expect(page.getByText(/does not need existing research/)).toBeVisible();
+
+  await page.locator('[data-block-id="claim-growth"]').evaluate((element) => {
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    const text = element.firstChild!;
+    range.setStart(text, 0);
+    range.setEnd(text, 40);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.getByRole("button", { name: "Compare selection" }).click();
+
+  const queue = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const result = await tools.get_pending_requests.execute({});
+    return JSON.parse(result.content[0].text) as {
+      requests: Array<{ requestId: string; intent: string; suggestedTools: string[] }>;
+    };
+  });
+  expect(queue.requests.map((request) => request.intent)).toEqual(["compare"]);
+  expect(queue.requests[0].suggestedTools).toContain("create_visualization");
+
+  // The agent answers it straight from the article: no research node exists yet.
+  const state = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    await tools.create_visualization.execute({
+      type: "comparison_table",
+      title: "Two readings of the 20%",
+      data: {
+        comparison: {
+          columns: ["Reading", "What it counts", "Where it leads"],
+          rows: [
+            { label: "Optimistic", values: ["New registrations worldwide", "Transition is accelerating"] },
+            { label: "Cautious", values: ["Share of cars on the road", "Transition is still early"] },
+          ],
+        },
+      },
+    });
+    const research = window.researchGarden!.getState();
+    return { nodes: research.document.nodes.length, canvasType: research.document.canvasView.type };
+  });
+  expect(state.nodes).toBe(0);
+  expect(state.canvasType).toBe("comparison_table");
+
+  await expect(page.locator(".comparison-view")).toBeVisible();
+  await expect(page.getByText("Transition is accelerating")).toBeVisible();
+  await expect(page.getByRole("tab", { name: /Canvas/ }).locator("span")).toHaveText("2");
+
+  expect(consoleErrors).toEqual([]);
+});
+
+test("a whole-article ask lets the agent anchor the passages it answers about", async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await installWebMCPStub(page);
+  await page.goto("/");
+  await expect(page.getByText("WebMCP tools registered")).toBeVisible();
+
+  // The reader asks about the article as a whole, without selecting anything.
+  await page.getByRole("textbox", { name: "Ask the Living Page" })
+    .fill("Verify the strongest statistic in this article and say how solid it is.");
+  await page.getByRole("button", { name: "Add to queue" }).click();
+
+  await expect(page.getByRole("tab", { name: /Queue/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".queue-card")).toHaveCount(1);
+  await expect(page.getByText(/Whole article · your agent anchors what it answers/)).toBeVisible();
+  await expect(page.locator(".research-mark")).toHaveCount(0);
+
+  // The agent sees a document-scoped entry and is told to anchor before answering.
+  const queue = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const result = await tools.get_pending_requests.execute({});
+    return JSON.parse(result.content[0].text) as {
+      requests: Array<{
+        requestId: string;
+        scope: string;
+        anchorId: string | null;
+        quote: string | null;
+        suggestedTools: string[];
+        anchorBudgetLeft: number;
+      }>;
+    };
+  });
+  expect(queue.requests[0].scope).toBe("document");
+  expect(queue.requests[0].anchorId).toBeNull();
+  expect(queue.requests[0].quote).toBeNull();
+  expect(queue.requests[0].suggestedTools).toContain("anchor_passage");
+  expect(queue.requests[0].anchorBudgetLeft).toBe(10);
+
+  // It reads the article as blocks, anchors the exact words, and answers on that anchor.
+  const applied = await page.evaluate(async (requestId: string) => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const blocksResult = await tools.get_article_blocks.execute({});
+    const article = JSON.parse(blocksResult.content[0].text) as {
+      blockCount: number;
+      blocks: Array<{ blockId: string; text: string }>;
+    };
+    const claim = article.blocks.find((block) => block.text.includes("20%"))!;
+    const quote = claim.text.slice(0, claim.text.indexOf("year over year") + "year over year".length);
+
+    const anchorResult = await tools.anchor_passage.execute({ requestId, quote });
+    const anchored = JSON.parse(anchorResult.content[0].text) as {
+      anchorId: string;
+      blockId: string;
+      quote: string;
+      createdBy: string;
+      alreadyExisted: boolean;
+      anchorBudgetLeft: number;
+    };
+
+    await tools.add_verification.execute({
+      anchorId: anchored.anchorId,
+      status: "mixed",
+      summary: "The direction is well supported; the exact size depends on which vehicles are counted.",
+      sources: [{
+        title: "Global EV Outlook 2026",
+        url: "https://www.iea.org/reports/global-ev-outlook-2026",
+        publisher: "International Energy Agency",
+        sourceType: "official",
+      }],
+    });
+
+    let invented = "";
+    try {
+      await tools.anchor_passage.execute({ requestId, quote: "Global EV sales fell by 40% after the subsidy ended" });
+    } catch (error) {
+      invented = (error as Error).message;
+    }
+    let unprompted = "";
+    try {
+      await tools.anchor_passage.execute({ requestId: "request_not_queued", quote: "Growth is not evenly distributed" });
+    } catch (error) {
+      unprompted = (error as Error).message;
+    }
+
+    await tools.resolve_request.execute({ requestId, summary: "Anchored the 20% claim and verified it." });
+
+    // Once the reader's request is cleared, the door closes again.
+    let afterResolve = "";
+    try {
+      await tools.anchor_passage.execute({ requestId, quote: "Growth is not evenly distributed" });
+    } catch (error) {
+      afterResolve = (error as Error).message;
+    }
+    return { article, anchored, invented, unprompted, afterResolve };
+  }, queue.requests[0].requestId);
+
+  expect(applied.article.blockCount).toBeGreaterThan(3);
+  expect(applied.anchored.blockId).toBe("claim-growth");
+  expect(applied.anchored.createdBy).toBe("agent");
+  expect(applied.anchored.alreadyExisted).toBe(false);
+  expect(applied.anchored.anchorBudgetLeft).toBe(9);
+  // A quote the article does not contain never becomes an anchor, and the request the
+  // reader queued is the only door in.
+  expect(applied.invented).toMatch(/does not appear in the article/);
+  expect(applied.unprompted).toMatch(/Unknown request/);
+  expect(applied.afterResolve).toMatch(/already done/);
+
+  // The reader sees the passage marked in the article, attributed to the agent.
+  await expect(page.locator('.research-mark[data-anchor-id]')).toHaveCount(1);
+  await expect(page.getByText("The direction is well supported")).toBeVisible();
+  await page.getByRole("tab", { name: /Layers/ }).click();
+  await expect(page.locator(".layer-badge.agent-anchored")).toHaveText("Agent anchored");
+  await expect(page.locator(".layer-badge.verified")).toHaveText("Verified");
+  await page.screenshot({ path: "output/playwright/agent-anchored-passage.png", fullPage: false });
+
+  // It is an ordinary anchor: undo takes the whole operation back.
+  await page.getByRole("tab", { name: /Queue/ }).click();
+  await expect(page.locator(".queue-card")).toHaveCount(0);
+  await expect(page.locator(".queue-resolved-row")).toHaveCount(1);
+
+  await page.reload();
+  await expect(page.locator('.research-mark[data-anchor-id]')).toHaveCount(1);
+  await page.getByRole("button", { name: "Undo" }).click();
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(page.locator('.research-mark[data-anchor-id]')).toHaveCount(0);
+
+  expect(consoleErrors).toEqual([]);
+});
+
+test("an agent answers with a widget the reader can operate inside a sandbox", async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await installWebMCPStub(page);
+  await page.goto("/");
+  await expect(page.getByText("WebMCP tools registered")).toBeVisible();
+
+  const widgetHtml = `
+<h1>Break-even year</h1>
+<label for="cost">Battery pack cost</label>
+<input id="cost" type="range" min="60" max="140" step="10" value="100">
+<p id="readout">100 $/kWh</p>
+<script>
+  var input = document.getElementById('cost');
+  var readout = document.getElementById('readout');
+  function isolation() {
+    var reachedParent = true;
+    try { void parent.document.title; } catch (error) { reachedParent = false; }
+    var reachedStorage = true;
+    try { void localStorage.length; } catch (error) { reachedStorage = false; }
+    return { reachedParent: reachedParent, reachedStorage: reachedStorage };
+  }
+  input.addEventListener('input', function () {
+    readout.textContent = input.value + ' $/kWh';
+    livingPage.setState({ cost: Number(input.value), isolation: isolation() });
+  });
+</script>`;
+
+  await page.evaluate(async (html) => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    await tools.create_visualization.execute({
+      type: "interactive",
+      title: "Battery cost model",
+      sourceNodeIds: [],
+      data: { interactive: { id: "cost-model", title: "Battery cost model", note: "Move the slider to see what the claim depends on.", html } },
+      config: {},
+    });
+  }, widgetHtml);
+
+  await expect(page.getByRole("complementary", { name: "Visual Thinking Canvas" })).toBeVisible();
+  const frameElement = page.locator('[data-canvas-type="interactive"] iframe.interactive-frame');
+  await expect(frameElement).toHaveAttribute("sandbox", "allow-scripts");
+  const widget = page.frameLocator('[data-canvas-type="interactive"] iframe.interactive-frame');
+  await expect(widget.locator("#readout")).toHaveText("100 $/kWh");
+
+  await widget.locator("#cost").focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await expect(widget.locator("#readout")).toHaveText("130 $/kWh");
+  await expect(page.locator("[data-interactive-state]")).toContainText("130");
+
+  const read = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const canvas = JSON.parse((await tools.get_canvas_state.execute({})).content[0].text) as {
+      type: string;
+      interactiveState: { canvasId: string; value: { cost: number; isolation: { reachedParent: boolean; reachedStorage: boolean } } } | null;
+      readerFocus: { itemId: string; label: string } | null;
+    };
+    const visible = JSON.parse((await tools.get_visible_page_context.execute({})).content[0].text) as { canvasType: string };
+    return { canvas, visible };
+  });
+  expect(read.canvas.type).toBe("interactive");
+  expect(read.visible.canvasType).toBe("interactive");
+  expect(read.canvas.interactiveState!.canvasId).toBe("cost-model");
+  expect(read.canvas.interactiveState!.value.cost).toBe(130);
+  expect(read.canvas.interactiveState!.value.isolation).toEqual({ reachedParent: false, reachedStorage: false });
+  expect(read.canvas.readerFocus!.itemId).toBe("cost-model");
+  await page.screenshot({ path: "output/playwright/interactive-canvas.png", fullPage: false });
+
+  const rejected = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    try {
+      await tools.create_visualization.execute({
+        type: "interactive",
+        title: "Charted",
+        data: { interactive: { id: "charted", title: "Charted", html: '<script src="https://cdn.example/chart.js"></' + 'script>' } },
+      });
+      return "accepted";
+    } catch (error) {
+      return (error as Error).message;
+    }
+  });
+  expect(rejected).toMatch(/self-contained/);
+  await expect(widget.locator("#readout")).toHaveText("130 $/kWh");
+
+  await page.getByRole("button", { name: "Reset interactive canvas Battery cost model" }).click();
+  await expect(widget.locator("#readout")).toHaveText("100 $/kWh");
+  const afterReset = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    return JSON.parse((await tools.get_canvas_state.execute({})).content[0].text) as { interactiveState: unknown };
+  });
+  expect(afterReset.interactiveState).toBeNull();
+
+  await page.getByRole("button", { name: "Remove interactive canvas Battery cost model" }).click();
+  await expect(frameElement).toHaveCount(0);
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(frameElement).toHaveCount(1);
   expect(consoleErrors).toEqual([]);
 });

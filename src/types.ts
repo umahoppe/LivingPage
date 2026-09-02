@@ -14,7 +14,14 @@ export type Actor = "human" | "agent";
 export type LivingAnnotationType = "explanation" | "simplification" | "highlight" | "verification";
 export type HighlightType = "important" | "claim" | "data" | "evidence" | "uncertain";
 export type VerificationStatus = "supported" | "mixed" | "unsupported" | "uncertain";
-export type CanvasType = "research_graph" | "diagram" | "timeline" | "comparison_table" | "image_board" | "map";
+export type CanvasType =
+  | "research_graph"
+  | "diagram"
+  | "timeline"
+  | "comparison_table"
+  | "image_board"
+  | "map"
+  | "interactive";
 
 export interface ArticleLink {
   start: number;
@@ -51,6 +58,18 @@ export interface ResearchAnchor {
   startOffset: number;
   endOffset: number;
   createdAt: string;
+  /** Readers anchor by selecting. An agent may only derive anchors while working a queued request. */
+  createdBy: Actor;
+  /** The reader request an agent-derived anchor was created for. */
+  requestId?: string;
+}
+
+export interface AnchorPassageInput {
+  /** The pending request this anchor is derived for. Agents never anchor unprompted. */
+  requestId: string;
+  quote: string;
+  blockId?: string;
+  occurrence?: number;
 }
 
 export interface ResearchSource {
@@ -155,12 +174,30 @@ export interface MapViewport {
   visibleMarkerIds: string[];
 }
 
+export interface InteractiveViewData {
+  id: string;
+  title: string;
+  /** Self-contained markup, styles, and script. It runs in a sandboxed frame with no network and no access to this page. */
+  html: string;
+  note?: string;
+  sourceNodeIds?: string[];
+  updatedAt?: string;
+}
+
+/** What the reader did inside the sandboxed frame, reported by the widget itself. */
+export interface InteractiveReaderState {
+  canvasId: string;
+  value: unknown;
+  updatedAt: string;
+}
+
 export interface VisualizationData {
   diagram?: { nodes: DiagramNode[]; edges: DiagramEdge[] };
   timeline?: TimelineItem[];
   comparison?: { columns: string[]; rows: ComparisonRow[] };
   imageBoard?: ImageBoardItem[];
   map?: MapViewData;
+  interactive?: InteractiveViewData;
 }
 
 export interface CanvasViewState {
@@ -211,6 +248,7 @@ export type RequestIntent =
   | "explain"
   | "simplify"
   | "visualize"
+  | "compare"
   | "map"
   | "research"
   | "verify"
@@ -220,7 +258,8 @@ export type RequestStatus = "pending" | "done" | "skipped";
 
 export interface PendingRequest {
   id: string;
-  anchorId: string;
+  /** null when the reader asked about the whole article instead of one passage. */
+  anchorId: string | null;
   intent: RequestIntent;
   prompt: string;
   note?: string;
@@ -232,7 +271,7 @@ export interface PendingRequest {
 }
 
 export interface RequestInput {
-  anchorId: string;
+  anchorId?: string | null;
   intent: RequestIntent;
   prompt: string;
   note?: string;

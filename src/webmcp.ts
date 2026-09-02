@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
+import { getCanvasFocus } from "./canvas-focus";
+import { getInteractiveState } from "./interactive-state";
 import { getMapViewport } from "./map-viewport";
+import { MAX_DERIVED_ANCHORS_PER_REQUEST, MAX_INTERACTIVE_HTML_CHARACTERS } from "./model";
 import type {
+  AnchorPassageInput,
   AnnotationInput,
   CanvasType,
   CanvasViewState,
@@ -47,7 +51,7 @@ function compactLayer(state: ResearchState, anchorId?: string) {
   const nodeIds = new Set(nodes.map((node) => node.id));
   return {
     revision: state.document.revision,
-    anchors: anchors.map(({ id, blockId, quote }) => ({ id, blockId, quote })),
+    anchors: anchors.map(({ id, blockId, quote, createdBy, requestId }) => ({ id, blockId, quote, createdBy, requestId: requestId ?? null })),
     nodes: nodes.map(({ id, anchorId: owner, parentId, type, title, summary, gapReason, createdBy }) => ({
       id,
       anchorId: owner,
@@ -87,7 +91,7 @@ function getPageContext() {
     articleTitle: article?.querySelector("h1")?.textContent?.trim(),
     articleContent: article?.textContent?.replace(/\s+/g, " ").trim().slice(0, 5000),
     selectedText: selection && !selection.isCollapsed ? selection.toString().trim() : "",
-    anchors: state?.document.anchors.map(({ id, blockId, quote }) => ({ id, blockId, quote })) ?? [],
+    anchors: state?.document.anchors.map(({ id, blockId, quote, createdBy }) => ({ id, blockId, quote, createdBy })) ?? [],
     graphRevision: state?.document.revision ?? 0,
     canvasType: state?.document.canvasView.type,
     annotationCount: state?.document.annotations.length ?? 0,
@@ -130,18 +134,68 @@ function getVisiblePageContext() {
     focusedResearchNodeIds: state.document.canvasView.focusedNodeIds,
     openPreview: Boolean(document.querySelector(".detail-panel")),
     canvasType: state.document.canvasView.type,
+    readerFocus: readerFocus(state),
     mapViewport: getMapViewport() ?? null,
+    interactiveState: interactiveReaderState(state.document.canvasView),
     pendingRequestCount: state.requests.filter((request) => request.status === "pending").length,
     revision: state.document.revision,
   };
 }
 
+/** Ids the reader can actually click on the current canvas, including the research-node fallback each canvas draws when the agent has sent no data of its own. */
+function canvasItemIds(state: ResearchState): Set<string> {
+  const { type, data } = state.document.canvasView;
+  const fallback = () => state.document.nodes.map((node) => node.id);
+  switch (type) {
+    case "diagram":
+      return new Set(data.diagram?.nodes.length ? data.diagram.nodes.map((node) => node.id) : fallback());
+    case "timeline":
+      return new Set(data.timeline?.length ? data.timeline.map((item) => item.id) : fallback());
+    case "comparison_table":
+      return new Set(data.comparison?.rows.length
+        ? data.comparison.rows.map((row, index) => row.id ?? `row-${index}`)
+        : fallback());
+    case "image_board":
+      return new Set((data.imageBoard ?? []).map((item) => item.id));
+    case "map":
+      return new Set((data.map?.markers ?? []).map((marker) => marker.id));
+    case "interactive":
+      return new Set(data.interactive ? [data.interactive.id] : []);
+    default:
+      return new Set(fallback());
+  }
+}
+
+/**
+ * The card the reader last opened on this canvas. A focus recorded on a canvas the reader has
+ * since left, or on a card that has since been removed, is stale and reported as none.
+ */
+function readerFocus(state: ResearchState) {
+  const focus = getCanvasFocus();
+  if (!focus || focus.canvasType !== state.document.canvasView.type) return null;
+  if (!canvasItemIds(state).has(focus.itemId)) return null;
+  return focus;
+}
+
+/** What the reader did inside the sandboxed widget, reported only while that widget is still the one on screen. */
+function interactiveReaderState(canvasView: CanvasViewState) {
+  const reported = getInteractiveState();
+  if (!reported || reported.canvasId !== canvasView.data.interactive?.id) return null;
+  return reported;
+}
+
 function getCanvasState() {
-  const canvasView = requireBridge().getState().document.canvasView;
-  if (canvasView.type !== "map") return canvasView;
+  const state = requireBridge().getState();
+  const canvasView = state.document.canvasView;
+  const focus = readerFocus(state);
+  if (canvasView.type === "interactive") {
+    return { ...canvasView, readerFocus: focus, interactiveState: interactiveReaderState(canvasView) };
+  }
+  if (canvasView.type !== "map") return { ...canvasView, readerFocus: focus };
   const viewport = getMapViewport();
   return {
     ...canvasView,
+    readerFocus: focus,
     mapViewport: viewport ?? null,
     visibleMarkers: viewport
       ? canvasView.data.map?.markers.filter((marker) => viewport.visibleMarkerIds.includes(marker.id)) ?? []
@@ -153,6 +207,7 @@ const intentToolHints: Record<RequestIntent, string[]> = {
   explain: ["insert_inline_explanation"],
   simplify: ["insert_simplified_layer"],
   visualize: ["create_visualization", "update_visualization"],
+  compare: ["create_visualization", "update_visualization"],
   map: ["create_visualization", "set_map_view"],
   research: ["create_research_nodes", "add_research_source"],
   verify: ["add_verification", "add_research_source"],
@@ -162,9 +217,12 @@ const intentToolHints: Record<RequestIntent, string[]> = {
 function describeRequest(state: ResearchState, request: PendingRequest) {
   const anchor = state.document.anchors.find((candidate) => candidate.id === request.anchorId);
   const annotations = state.document.annotations.filter((annotation) => annotation.anchorId === request.anchorId);
+  const scope = request.anchorId === null ? "document" : "passage";
+  const derivedAnchors = state.document.anchors.filter((candidate) => candidate.requestId === request.id);
   return {
     requestId: request.id,
     status: request.status,
+    scope,
     intent: request.intent,
     prompt: request.prompt,
     note: request.note ?? null,
@@ -173,7 +231,14 @@ function describeRequest(state: ResearchState, request: PendingRequest) {
     blockId: anchor?.blockId ?? null,
     quote: anchor?.quote ?? null,
     surroundingContext: anchor ? `${anchor.prefix}${anchor.quote}${anchor.suffix}` : null,
-    suggestedTools: intentToolHints[request.intent],
+    suggestedTools: scope === "document"
+      ? ["get_article_blocks", "anchor_passage", ...intentToolHints[request.intent]]
+      : intentToolHints[request.intent],
+    scopeNote: scope === "document"
+      ? "The reader asked about the whole article, so no anchor exists yet. Read get_article_blocks, then call anchor_passage with this requestId and the exact words you are answering about; use the anchorId it returns with the tool that fits the intent."
+      : "The reader anchored this passage. Use its anchorId directly. If the answer genuinely depends on another passage, anchor_passage with this requestId can add one more.",
+    derivedAnchorIds: derivedAnchors.map((candidate) => candidate.id),
+    anchorBudgetLeft: Math.max(0, MAX_DERIVED_ANCHORS_PER_REQUEST - derivedAnchors.length),
     existingLayers: [...new Set(annotations.map((annotation) => annotation.type))],
     researchNodeCount: state.document.nodes.filter((node) => node.anchorId === request.anchorId).length,
     resolutionSummary: request.resolutionSummary ?? null,
@@ -194,8 +259,30 @@ function readPendingRequests(includeResolved: boolean, limit: number) {
     returnedCount: selected.length,
     requests: selected.map((request) => describeRequest(state, request)),
     nextStep: pending.length
-      ? "Work through the pending requests in order. Apply each one with the page-changing tool that fits its intent, then call resolve_request with its requestId so the reader sees it clear."
+      ? "Work through the pending requests in order. An entry with scope \"passage\" already carries the reader's anchorId; an entry with scope \"document\" covers the whole article, so read get_article_blocks and anchor the exact words you answer about with anchor_passage first. Apply each one with the page-changing tool that fits its intent, then call resolve_request with its requestId so the reader sees it clear."
       : "The reader has not marked anything yet. Ask them to select article text and choose an action from the selection menu.",
+  };
+}
+
+function readArticleBlocks(offset: number, limit: number) {
+  const state = requireBridge().getState();
+  const blocks = state.document.article.blocks;
+  const anchoredBlockIds = new Set(state.document.anchors.map((anchor) => anchor.blockId));
+  const selected = blocks.slice(offset, offset + limit);
+  return {
+    articleTitle: state.document.article.title,
+    articleSourceUrl: state.document.article.sourceUrl ?? null,
+    blockCount: blocks.length,
+    offset,
+    returnedCount: selected.length,
+    hasMore: offset + selected.length < blocks.length,
+    blocks: selected.map((block) => ({
+      blockId: block.id,
+      kind: block.kind,
+      text: block.text,
+      isAnchored: anchoredBlockIds.has(block.id),
+    })),
+    note: "Quote these words verbatim when you call anchor_passage. The page resolves the position itself and rejects any quote it cannot find.",
   };
 }
 
@@ -246,7 +333,7 @@ export function useWebMCP(): WebMCPStatus {
       {
         name: "get_visible_page_context",
         title: "Read visible Living Page state",
-        description: "Read the visible article context, inline layers, focus, preview, current canvas view, and — when a Map canvas is open — the live map viewport, before changing the experience.",
+        description: "Read the visible article context, inline layers, focus, preview, current canvas view, the canvas card the reader last opened (readerFocus), and — when a Map canvas is open — the live map viewport, before changing the experience.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
         annotations: { readOnlyHint: true, untrustedContentHint: true },
         execute: async () => toolResult(getVisiblePageContext()),
@@ -254,7 +341,7 @@ export function useWebMCP(): WebMCPStatus {
       {
         name: "get_canvas_state",
         title: "Read visual canvas",
-        description: "Read the current Visual Thinking Canvas independently from the underlying research nodes and sources. For a Map canvas this also reports the live viewport the reader is looking at: center, zoom, bounds, and the markers currently on screen.",
+        description: "Read the current Visual Thinking Canvas independently from the underlying research nodes and sources. readerFocus reports the card the reader last opened on this canvas — its id, label, and linked research nodes — so when they say 'dig into this one' you already know which one they mean. For a Map canvas this also reports the live viewport the reader is looking at: center, zoom, bounds, and the markers currently on screen. For an Interactive canvas it reports interactiveState — whatever the widget last passed to livingPage.setState, so you can read the slider the reader moved or the option they picked.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
         annotations: { readOnlyHint: true, untrustedContentHint: true },
         execute: async () => toolResult(getCanvasState()),
@@ -276,6 +363,59 @@ export function useWebMCP(): WebMCPStatus {
           input.includeResolved === true,
           Math.min(50, Math.max(1, Number(input.limit ?? 25))),
         )),
+      },
+      {
+        name: "get_article_blocks",
+        title: "Read the article as addressable blocks",
+        description: "Read the article in full as numbered blocks, each with the blockId and the exact text it contains. Use this before anchor_passage so you quote the article word for word, and whenever a request covers the whole article rather than one marked passage.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            offset: { type: "number", minimum: 0, description: "First block to return. Defaults to 0." },
+            limit: { type: "number", minimum: 1, maximum: 120, description: "Maximum blocks to return. Defaults to 40." },
+          },
+          additionalProperties: false,
+        },
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        execute: async (input) => toolResult(readArticleBlocks(
+          Math.max(0, Math.round(Number(input.offset ?? 0))),
+          Math.min(120, Math.max(1, Math.round(Number(input.limit ?? 40)))),
+        )),
+      },
+      {
+        name: "anchor_passage",
+        title: "Anchor a passage for a queued request",
+        description: `Create a text anchor on the reader's behalf while you work one of their queued requests. Use it when a request covers the whole article and has no anchor yet, or when answering an anchored request genuinely requires a second passage. Quote the article verbatim: the page finds the words itself and refuses a quote it cannot locate, so you cannot anchor text the article does not contain. Anchoring is never unprompted — a pending requestId is required — and one request yields at most ${MAX_DERIVED_ANCHORS_PER_REQUEST} anchors. The returned anchorId works with every anchor-based tool, and the reader sees the anchor marked as yours.`,
+        inputSchema: {
+          type: "object",
+          required: ["requestId", "quote"],
+          properties: {
+            requestId: { type: "string", description: "A pending requestId from get_pending_requests." },
+            quote: { type: "string", maxLength: 1200, description: "The exact words to anchor, copied from the article." },
+            blockId: { type: "string", description: "Optional blockId from get_article_blocks, when the same words appear in several blocks." },
+            occurrence: { type: "number", minimum: 1, description: "Which occurrence of the quote to anchor. Defaults to the first." },
+          },
+          additionalProperties: false,
+        },
+        execute: async (input) => {
+          const { anchor, alreadyExisted } = requireBridge().anchorPassage({
+            requestId: input.requestId as string,
+            quote: input.quote as string,
+            blockId: input.blockId as string | undefined,
+            occurrence: input.occurrence as number | undefined,
+          } satisfies AnchorPassageInput);
+          const state = requireBridge().getState();
+          const used = state.document.anchors.filter((candidate) => candidate.requestId === input.requestId).length;
+          return toolResult({
+            ok: true,
+            anchorId: anchor.id,
+            blockId: anchor.blockId,
+            quote: anchor.quote,
+            createdBy: anchor.createdBy,
+            alreadyExisted,
+            anchorBudgetLeft: Math.max(0, MAX_DERIVED_ANCHORS_PER_REQUEST - used),
+          });
+        },
       },
       {
         name: "resolve_request",
@@ -522,15 +662,15 @@ export function useWebMCP(): WebMCPStatus {
       {
         name: "create_visualization",
         title: "Transform the visual canvas",
-        description: "Create the most useful Diagram, Timeline, Comparison, Image Board, or Map from sourced research. Image Board data uses imageBoard items with id, title, imageUrl, note, sourceUrl, and sourceLabel. Map data uses map.markers items with id, label, lat, lng, note, kind, sourceUrl, sourceLabel, and sourceNodeIds, plus optional map.center {lat,lng}, map.zoom (1-19), and map.focusMarkerId; supply real WGS84 coordinates yourself, since the page does not geocode place names. The underlying research data remains unchanged.",
+        description: `Create the most useful Diagram, Timeline, Comparison, Image Board, Map, or Interactive widget. Build it from the research layer when one exists, or directly from the article and your own sources when it does not — this tool never requires existing research nodes. Diagram data uses diagram.nodes items with id, label, description, and sourceNodeIds, plus diagram.edges items with from, to, and an optional label — the page runs the graph layout itself, so send the relationships and let layout choose the reading direction. Image Board data uses imageBoard items with id, title, imageUrl, note, sourceUrl, and sourceLabel. Map data uses map.markers items with id, label, lat, lng, note, kind, sourceUrl, sourceLabel, and sourceNodeIds, plus optional map.center {lat,lng}, map.zoom (1-19), and map.focusMarkerId; supply real WGS84 coordinates yourself, since the page does not geocode place names. Interactive data uses interactive with id, title, note, sourceNodeIds, and html: one self-contained document body with inline <style> and <script> and no external references, at most ${MAX_INTERACTIVE_HTML_CHARACTERS} characters. It runs in a sandboxed frame with no network, no storage, and no access to this page, so build everything you need inline; call livingPage.setState(value) from inside it whenever the reader changes something, and read that value back with get_canvas_state. The underlying research data remains unchanged.`,
         inputSchema: {
           type: "object",
           required: ["type", "title", "data"],
           properties: {
-            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table", "image_board", "map"] },
+            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table", "image_board", "map", "interactive"] },
             title: { type: "string", maxLength: 120 },
             sourceNodeIds: { type: "array", items: { type: "string" }, maxItems: 30 },
-            layout: { type: "string", maxLength: 60 },
+            layout: { type: "string", maxLength: 60, description: "Reading direction for a Diagram canvas: \"vertical\" (default, top to bottom) or \"horizontal\" (left to right). Other canvases ignore it." },
             data: { type: "object" },
             config: { type: "object" },
           },
@@ -601,10 +741,10 @@ export function useWebMCP(): WebMCPStatus {
         inputSchema: {
           type: "object",
           properties: {
-            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table", "image_board", "map"] },
+            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table", "image_board", "map", "interactive"] },
             title: { type: "string", maxLength: 120 },
             sourceNodeIds: { type: "array", items: { type: "string" }, maxItems: 30 },
-            layout: { type: "string", maxLength: 60 },
+            layout: { type: "string", maxLength: 60, description: "Reading direction for a Diagram canvas: \"vertical\" (default, top to bottom) or \"horizontal\" (left to right). Other canvases ignore it." },
             data: { type: "object" },
             config: { type: "object" },
           },
@@ -628,6 +768,7 @@ export function useWebMCP(): WebMCPStatus {
     Promise.all(definitions.map((tool) => modelContext.registerTool(tool, { signal: controller.signal })))
       .then(() => setStatus("ready"))
       .catch((error: unknown) => {
+        if (controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) return;
         console.error("WebMCP registration failed", error);
         setStatus("error");
       });

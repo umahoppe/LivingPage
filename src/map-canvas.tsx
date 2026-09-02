@@ -2,6 +2,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { ArrowUpRight, MapPin, X } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
+import { focusCanvasCard } from "./canvas-focus";
 import { setMapViewport } from "./map-viewport";
 import { useResearch } from "./research-context";
 import type { MapMarker, MapViewData } from "./types";
@@ -133,7 +134,10 @@ export function MapCanvasView({ data }: { data: MapViewData }) {
         keyboard: false,
       });
       instance.bindPopup(markerPopup(marker));
-      instance.on("click", () => marker.sourceNodeIds?.[0] && setSelectedNodeId(marker.sourceNodeIds[0]));
+      instance.on("click", () => {
+        const nodeId = focusCanvasCard("map", { id: marker.id, label: marker.label, sourceNodeIds: marker.sourceNodeIds });
+        if (nodeId) setSelectedNodeId(nodeId);
+      });
       instance.addTo(layer);
       markerRefs.current.set(marker.id, instance);
     });
@@ -164,7 +168,8 @@ export function MapCanvasView({ data }: { data: MapViewData }) {
       map.flyTo([marker.lat, marker.lng], Math.max(map.getZoom(), DEFAULT_ZOOM), { duration: 0.6 });
       markerRefs.current.get(marker.id)?.openPopup();
     }
-    if (marker.sourceNodeIds?.[0]) setSelectedNodeId(marker.sourceNodeIds[0]);
+    const nodeId = focusCanvasCard("map", { id: marker.id, label: marker.label, sourceNodeIds: marker.sourceNodeIds });
+    if (nodeId) setSelectedNodeId(nodeId);
   };
 
   return (

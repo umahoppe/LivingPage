@@ -1,9 +1,12 @@
 import type {
   Actor,
+  AnchorPassageInput,
   AnnotationInput,
+  ArticleBlock,
   ArticleDocument,
   CanvasViewState,
   HistoryEntry,
+  InteractiveViewData,
   MapViewData,
   NodeInput,
   PendingRequest,
@@ -44,6 +47,11 @@ export const emptyState = (): ResearchState => ({
   undoStack: [],
   redoStack: [],
 });
+
+export const MIN_ANCHOR_CHARACTERS = 2;
+export const MAX_ANCHOR_CHARACTERS = 1_200;
+/** An agent derives anchors only inside one reader request, and never floods the page with them. */
+export const MAX_DERIVED_ANCHORS_PER_REQUEST = 10;
 
 export const makeId = (prefix: string): string =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -102,13 +110,24 @@ function normalizeDocumentBlockIds(document: ResearchDocument): ResearchDocument
   };
 }
 
+/** Anchors persisted before authorship was recorded were all made by the reader. */
+function withAnchorAuthors(document: ResearchDocument): ResearchDocument {
+  if (document.anchors.every((anchor) => anchor.createdBy)) return document;
+  return {
+    ...document,
+    anchors: document.anchors.map((anchor) => anchor.createdBy ? anchor : { ...anchor, createdBy: "human" as Actor }),
+  };
+}
+
+const normalizeDocument = (document: ResearchDocument) => withAnchorAuthors(normalizeDocumentBlockIds(document));
+
 export function normalizeResearchState(state: ResearchState): ResearchState {
   return withLiveRequests({
     ...state,
-    requests: state.requests ?? [],
-    document: normalizeDocumentBlockIds(state.document),
-    undoStack: state.undoStack.map((entry) => ({ ...entry, document: normalizeDocumentBlockIds(entry.document) })),
-    redoStack: state.redoStack.map((entry) => ({ ...entry, document: normalizeDocumentBlockIds(entry.document) })),
+    requests: (state.requests ?? []).map((request) => ({ ...request, anchorId: request.anchorId ?? null })),
+    document: normalizeDocument(state.document),
+    undoStack: state.undoStack.map((entry) => ({ ...entry, document: normalizeDocument(entry.document) })),
+    redoStack: state.redoStack.map((entry) => ({ ...entry, document: normalizeDocument(entry.document) })),
   });
 }
 
@@ -140,7 +159,7 @@ export function commitDocument(
  */
 export function withLiveRequests(state: ResearchState): ResearchState {
   const anchorIds = new Set(state.document.anchors.map((anchor) => anchor.id));
-  const requests = state.requests.filter((request) => anchorIds.has(request.anchorId));
+  const requests = state.requests.filter((request) => request.anchorId === null || anchorIds.has(request.anchorId));
   return requests.length === state.requests.length ? state : { ...state, requests };
 }
 
@@ -148,14 +167,15 @@ export function enqueueRequest(
   state: ResearchState,
   input: RequestInput,
 ): { state: ResearchState; request: PendingRequest } {
-  if (!state.document.anchors.some((anchor) => anchor.id === input.anchorId)) {
-    throw new Error(`Unknown anchor: ${input.anchorId}`);
+  const anchorId = input.anchorId ?? null;
+  if (anchorId !== null && !state.document.anchors.some((anchor) => anchor.id === anchorId)) {
+    throw new Error(`Unknown anchor: ${anchorId}`);
   }
   const prompt = input.prompt.trim();
   if (!prompt) throw new Error("A queued request needs a prompt");
   const request: PendingRequest = {
     id: makeId("request"),
-    anchorId: input.anchorId,
+    anchorId,
     intent: input.intent,
     prompt,
     note: input.note?.trim() || undefined,
@@ -201,23 +221,146 @@ export function markQueueRead(state: ResearchState): ResearchState {
 
 export function addAnchor(
   state: ResearchState,
-  anchor: Omit<ResearchAnchor, "id" | "createdAt">,
-): { state: ResearchState; anchor: ResearchAnchor } {
+  anchor: Omit<ResearchAnchor, "id" | "createdAt" | "createdBy">,
+  actor: Actor = "human",
+): { state: ResearchState; anchor: ResearchAnchor; alreadyExisted: boolean } {
   const existing = state.document.anchors.find(
     (candidate) => candidate.blockId === anchor.blockId && candidate.quote === anchor.quote,
   );
-  if (existing) return { state, anchor: existing };
+  if (existing) return { state, anchor: existing, alreadyExisted: true };
 
   const created: ResearchAnchor = {
     ...anchor,
     id: makeId("anchor"),
     createdAt: new Date().toISOString(),
+    createdBy: actor,
   };
   const next = {
     ...state.document,
     anchors: [...state.document.anchors, created],
   };
-  return { state: commitDocument(state, next, "Created a research anchor", "human"), anchor: created };
+  const label = actor === "agent" ? "Agent anchored a passage" : "Created a research anchor";
+  return { state: commitDocument(state, next, label, actor), anchor: created, alreadyExisted: false };
+}
+
+/**
+ * Collapse runs of whitespace the way a reader's selection is stored, while keeping
+ * the offset of every surviving character in the original block text.
+ */
+function collapsedWithOffsets(source: string) {
+  let text = "";
+  const offsets: number[] = [];
+  let previousWasSpace = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (/\s/.test(character)) {
+      if (previousWasSpace || !text.length) continue;
+      text += " ";
+      offsets.push(index);
+      previousWasSpace = true;
+      continue;
+    }
+    text += character;
+    offsets.push(index);
+    previousWasSpace = false;
+  }
+  return { text, offsets };
+}
+
+/**
+ * Resolve a verbatim quote to a range in one block. The agent supplies the words it
+ * read; the page decides where they are, so an invented quote cannot become an anchor.
+ */
+function locateQuote(block: ArticleBlock, quote: string, occurrence: number) {
+  const { text, offsets } = collapsedWithOffsets(block.text);
+  const needle = normalizedText(quote);
+  if (!needle) return undefined;
+  let from = 0;
+  for (let hit = 0; hit < occurrence; hit += 1) {
+    const index = text.indexOf(needle, from);
+    if (index < 0) return undefined;
+    if (hit === occurrence - 1) {
+      const startOffset = offsets[index];
+      const endOffset = offsets[index + needle.length - 1] + 1;
+      return {
+        blockId: block.id,
+        quote: needle,
+        prefix: block.text.slice(Math.max(0, startOffset - 48), startOffset),
+        suffix: block.text.slice(endOffset, endOffset + 48),
+        startOffset,
+        endOffset,
+      };
+    }
+    from = index + 1;
+  }
+  return undefined;
+}
+
+function countQuoteMatches(block: ArticleBlock, needle: string) {
+  const { text } = collapsedWithOffsets(block.text);
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const index = text.indexOf(needle, from);
+    if (index < 0) return count;
+    count += 1;
+    from = index + 1;
+  }
+}
+
+/**
+ * Agent-side anchoring. It is deliberately not a free hand: the agent may only anchor
+ * while working a request the reader queued, the quote must exist verbatim in the
+ * article, and one request can only produce a handful of anchors.
+ */
+export function anchorPassage(
+  state: ResearchState,
+  input: AnchorPassageInput,
+): { state: ResearchState; anchor: ResearchAnchor; alreadyExisted: boolean } {
+  const request = state.requests.find((candidate) => candidate.id === input.requestId);
+  if (!request) {
+    throw new Error(`Unknown request: ${input.requestId}. Call get_pending_requests and anchor only for an entry the reader queued.`);
+  }
+  if (request.status !== "pending") {
+    throw new Error(`Request ${input.requestId} is already ${request.status}, so it can no longer take new anchors`);
+  }
+
+  const needle = normalizedText(input.quote);
+  if (needle.length < MIN_ANCHOR_CHARACTERS) throw new Error("A quote needs at least 2 characters");
+  if (needle.length > MAX_ANCHOR_CHARACTERS) throw new Error(`A quote holds at most ${MAX_ANCHOR_CHARACTERS} characters`);
+
+  const derived = state.document.anchors.filter(
+    (anchor) => anchor.createdBy === "agent" && anchor.requestId === request.id,
+  );
+  if (derived.length >= MAX_DERIVED_ANCHORS_PER_REQUEST) {
+    throw new Error(`This request already has ${MAX_DERIVED_ANCHORS_PER_REQUEST} agent anchors. Resolve it, or ask the reader to mark more passages.`);
+  }
+
+  const blocks = state.document.article.blocks;
+  const scope = input.blockId ? blocks.filter((block) => block.id === input.blockId) : blocks;
+  if (input.blockId && !scope.length) throw new Error(`Unknown block: ${input.blockId}`);
+
+  const occurrence = Math.max(1, Math.round(input.occurrence ?? 1));
+  let remaining = occurrence;
+  let located: ReturnType<typeof locateQuote>;
+  for (const block of scope) {
+    const matches = countQuoteMatches(block, needle);
+    if (matches >= remaining) {
+      located = locateQuote(block, needle, remaining);
+      break;
+    }
+    remaining -= matches;
+  }
+  if (!located) {
+    throw new Error(
+      occurrence > 1
+        ? `The article does not contain occurrence ${occurrence} of that quote`
+        : "That quote does not appear in the article. Anchor the exact words as they are written, using get_article_blocks.",
+    );
+  }
+
+  const result = addAnchor(state, { ...located, requestId: request.id }, "agent");
+  return result;
 }
 
 export function replaceArticle(state: ResearchState, article: ArticleDocument): ResearchState {
@@ -364,6 +507,7 @@ export function removeCanvasItem(state: ResearchState, itemId: string): Research
       rows: data.comparison.rows.filter((row, index) => (row.id ?? `row-${index}`) !== itemId),
     } : undefined,
     imageBoard: data.imageBoard?.filter((item) => item.id !== itemId),
+    interactive: data.interactive?.id === itemId ? undefined : data.interactive,
     map: data.map ? {
       ...data.map,
       markers: data.map.markers.filter((marker) => marker.id !== itemId),
@@ -388,7 +532,42 @@ function validatedCanvasData(data: CanvasViewState["data"]) {
     }
     return { ...item, imageUrl: imageUrl.toString(), sourceUrl };
   });
-  return { ...data, imageBoard, map: data.map ? validatedMapData(data.map) : undefined };
+  return {
+    ...data,
+    imageBoard,
+    map: data.map ? validatedMapData(data.map) : undefined,
+    interactive: data.interactive ? validatedInteractiveData(data.interactive) : undefined,
+  };
+}
+
+/** A sandboxed widget is a page-sized document, not a bundle: it is capped and must be self-contained. */
+export const MAX_INTERACTIVE_HTML_CHARACTERS = 60_000;
+
+/**
+ * The frame runs with no network of its own, so anything it would have to fetch is dead markup.
+ * Refusing it here tells the agent why, instead of rendering a widget that silently fails.
+ */
+const EXTERNAL_RESOURCE = /<\s*(script|link|iframe|object|embed)\b[^>]*\b(src|href)\s*=\s*["']?\s*(https?:|\/\/)/i;
+
+function validatedInteractiveData(view: InteractiveViewData): InteractiveViewData {
+  const title = view.title?.trim();
+  if (!title) throw new Error("An interactive canvas needs a title");
+  const html = view.html ?? "";
+  if (!html.trim()) throw new Error("An interactive canvas needs html to run");
+  if (html.length > MAX_INTERACTIVE_HTML_CHARACTERS) {
+    throw new Error(`An interactive canvas is limited to ${MAX_INTERACTIVE_HTML_CHARACTERS} characters of html`);
+  }
+  if (EXTERNAL_RESOURCE.test(html)) {
+    throw new Error("An interactive canvas must be self-contained: its sandbox blocks external scripts, stylesheets, and frames");
+  }
+  return {
+    id: view.id?.trim() || makeId("interactive"),
+    title,
+    html,
+    note: view.note,
+    sourceNodeIds: view.sourceNodeIds ?? [],
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 const MAX_MAP_MARKERS = 250;
