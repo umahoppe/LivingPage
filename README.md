@@ -4,7 +4,7 @@
 
 Living Page is an agent-native layer for understanding the web. A person selects something in the article and an agent turns its answer into interface: an inline explanation, a simplified layer, a semantic highlight, a sourced verification, a research branch, or a visualization. Research Garden remains the deep-research mode inside that experience.
 
-Public HTML articles can be imported by URL. The Sites Worker extracts readable headings, paragraphs, quotes, authorship, publication metadata, and a representative image into same-origin structured content. Scripts, forms, embeds, local-network targets, non-HTML resources, and oversized responses are rejected.
+Public articles can be imported by URL. The Sites Worker extracts readable headings, paragraphs, quotes, authorship, publication metadata, and a representative image into same-origin structured content. Scripts, forms, embeds, local-network targets, unsupported content types, and oversized responses are rejected.
 
 Links inside an imported article stay readable. Every `<a href>` is resolved against the article's own base URL and kept as an offset range in the block text, so a click opens the linked page in a side reader — same extraction, same safety checks — without touching the research layer. The reader follows further links with a back step, offers the original in a new tab, and can promote the linked page to the main article.
 
@@ -17,6 +17,18 @@ Links inside an imported article stay readable. Every `<a href>` is resolved aga
 5. Reframe the same research as Research, Diagram, Timeline, Comparison, a sourced Image Board, a Map of the places involved, or an Interactive widget you can operate — without changing the underlying sources.
 6. Track every anchored passage in the Layers tab — inline explanations, simplifications, highlights, verifications, and research cards all stay listed with the passage they belong to, and selecting one scrolls the article back to it.
 7. Review provenance in place, open image previews, remove mistaken anchors or individual cards, or undo the complete operation.
+
+## PDF import
+
+A PDF URL imports and works, but the import dialog does not offer it. Extraction quality is uneven in ways the reader cannot predict from the URL alone — see the layout caveats below — so the page makes no promise it cannot keep for an arbitrary file. Paste one and it is read; the refusals below explain themselves when it cannot be.
+
+A PDF reaches the page as the same `ArticleDocument` an HTML import produces, so anchoring, the request queue, inline layers, research cards, and every canvas work on it unchanged. What differs is what a PDF can carry.
+
+A PDF has no paragraphs — it has lines placed on a page — so the worker rebuilds them. Lines are joined into paragraphs, a word broken across a line break loses its hyphen, and a line that stops short of the column width ends its paragraph. Lines that repeat identically across pages are running heads or footers and are dropped, as are bare folios. A short unpunctuated line standing alone becomes a heading, which is what lets a section title survive the length floor that body text has to clear.
+
+These are heuristics about typography, and the markup of an HTML article states outright what they have to guess. A two-column layout or a heavily tabular report will read out of order, because column geometry is the only thing the file records about reading order. There are no in-text links to follow in a side reader and no hero image, since neither exists to extract.
+
+A scanned PDF parses perfectly and yields nothing. Rather than importing a blank article, the worker says the file has no text layer; there is no text recognition here. Encrypted or damaged files are refused the same way, PDFs are capped at 10 MB and 60 pages, and every URL goes through the same redirect, port, and private-network checks an HTML import does.
 
 ## Request queue
 
@@ -106,7 +118,7 @@ The queue test marks three passages with three different intents, checks that no
 
 The interactive test has an agent send a slider widget, drives the slider as a reader, and reads the reported value back through `get_canvas_state` — including the widget's own probe showing that the parent document and `localStorage` are both out of reach — then checks that an external script is refused, that Reset clears the reported state, and that Remove and Undo behave like any other canvas card.
 
-The import tests verify URL safety checks, readable-content extraction, imported article persistence, and WebMCP context for the imported source.
+The import tests verify URL safety checks, readable-content extraction, imported article persistence, and WebMCP context for the imported source. The PDF tests build real PDFs and run them through the parser: paragraph reconstruction from wrapped lines, hyphen repair, running heads and folios dropped, headings kept, metadata and dates read, and refusals for a scan with no text layer, a file too thin to read, an unreadable file, and one past the size budget. An end-to-end test imports a PDF-shaped article and anchors and verifies a passage in it, checking that a document with no links and no hero image still supports the full layer stack.
 
 ## Browser support
 

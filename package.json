@@ -19,6 +19,7 @@
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
+    "unpdf": "^1.8.1",
     "vite": "latest"
   },
   "devDependencies": {

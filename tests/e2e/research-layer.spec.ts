@@ -208,14 +208,87 @@ test("an anchor previews its layers before opening the panel or linked canvas", 
   await expect(page.getByRole("complementary", { name: "Visual Thinking Canvas" })).toBeVisible();
   await expect(page.locator('[data-canvas-type="map"]')).toBeVisible();
 
+  // The pin carries the count of what is not visible from the passage itself.
+  await expect(page.locator(".anchor-pin .anchor-pin-count")).toHaveText("1");
+
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByRole("complementary")).toHaveCount(0);
-  await page.getByRole("button", { name: /Preview research for/ }).click();
+  await page.getByRole("button", { name: /Preview 1 research card for/ }).click();
   const sheetBox = await preview.boundingBox();
   expect(sheetBox).not.toBeNull();
   expect(sheetBox!.x).toBeGreaterThanOrEqual(0);
   expect(sheetBox!.x + sheetBox!.width).toBeLessThanOrEqual(390);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+  expect(consoleErrors).toEqual([]);
+});
+
+test("an anchor carrying both kinds of layer points at both of them", async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await installWebMCPStub(page);
+  await page.goto("/");
+  await expect(page.getByText("WebMCP tools registered")).toBeVisible();
+
+  await page.locator('[data-block-id="claim-growth"]').evaluate((element) => {
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    range.setStart(element.firstChild!, 0);
+    range.setEnd(element.firstChild!, 49);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.getByRole("button", { name: "Grow research here" }).click();
+
+  // One passage answered in both registers: beside the text, and as a card away from it.
+  await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const selectionResult = await tools.get_current_selection.execute({});
+    const { associatedAnchorId: anchorId } = JSON.parse(selectionResult.content[0].text) as { associatedAnchorId: string };
+    const layerResult = await tools.get_research_layer.execute({ anchorId });
+    const { revision } = JSON.parse(layerResult.content[0].text) as { revision: number };
+    await tools.create_research_nodes.execute({
+      anchorId,
+      baseRevision: revision,
+      operationId: "both-kinds-e2e",
+      operationLabel: "Add a research card",
+      nodes: [{ type: "why", title: "The baseline was depressed", summary: "The comparison quarter followed an incentive expiry." }],
+    });
+    await tools.insert_inline_explanation.execute({
+      anchorId,
+      title: "What year over year counts",
+      explanation: "The rate compares registrations against the same quarter a year earlier, not against the installed base.",
+      level: "Beginner",
+    });
+  });
+
+  // The heading chip counts everything attached, so a layer can never read as zero.
+  await expect(page.locator(".anchor-node-count")).toHaveText("2");
+
+  // The panel row opens where it is, and the arrow is the separate act of going to the passage.
+  const inlineRow = page.locator(".anchor-inline-shell").first();
+  await expect(inlineRow.locator(".anchor-inline-body")).toHaveCount(0);
+  await inlineRow.locator(".anchor-inline-main").click();
+  await expect(inlineRow.getByText("The rate compares registrations against the same quarter a year earlier, not against the installed base.")).toBeVisible();
+
+  // The peek promises both kinds in its badges, so it shows one of each rather than only the card.
+  await page.getByRole("button", { name: "Close research panel" }).click();
+  await page.locator(".research-mark").first().hover();
+  const preview = page.getByRole("dialog", { name: /Research attached to/ });
+  await expect(preview.getByText("The baseline was depressed", { exact: true })).toBeVisible();
+  await expect(preview.getByText("What year over year counts", { exact: true })).toBeVisible();
+
+  // On a narrow viewport the panel is a full-screen overlay: revealing a passage must step aside,
+  // or it scrolls an article the reader cannot see.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Open research panel" }).click();
+  await expect(page.getByRole("complementary", { name: "Living Page layers" })).toBeVisible();
+  await page.locator(".anchor-heading").first().click();
+  await expect(page.getByRole("complementary")).toHaveCount(0);
+  await expect(page.locator(".research-mark.revealed").first()).toBeInViewport();
+
   expect(consoleErrors).toEqual([]);
 });
 
@@ -275,6 +348,84 @@ test("imports a public article and exposes its context to WebMCP", async ({ page
   await page.reload();
   await expect(page.getByRole("heading", { name: "Cities rethink the curb" })).toBeVisible();
   await expect(page.locator("[data-anchor-id]")).toHaveCount(1);
+});
+
+test("an imported PDF carries no markup but keeps every layer the page offers", async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await installWebMCPStub(page);
+  // What the PDF reader produces: headings and paragraphs, no in-text links, no hero image.
+  await page.route("**/api/import", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        article: {
+          id: "article_imported_pdf",
+          title: "Curb Space Allocation Review",
+          deck: "Cities are re-examining how the curb is allocated between deliveries, buses, bicycles, and places to meet.",
+          author: "Mina Ortega",
+          publishedAt: "2026-08-31T12:00:00.000Z",
+          sourceUrl: "https://city.example/reports/curb-space-review.pdf",
+          siteName: "city.example",
+          importedAt: "2026-09-01T00:00:00Z",
+          blocks: [
+            { id: "imported-0", kind: "h2", text: "1 Introduction" },
+            { id: "imported-1", kind: "p", text: "Cities are re-examining how the curb is allocated between deliveries, buses, bicycles, trees, and places for people to meet each other." },
+            { id: "imported-2", kind: "h2", text: "2 Findings" },
+            { id: "imported-3", kind: "p", text: "Measured across twelve corridors, delivery dwell time fell where loading zones were formalised and rose where they were removed entirely." },
+          ],
+        },
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Import article", exact: true }).first().click();
+  await page.getByLabel("Public article URL").fill("https://city.example/reports/curb-space-review.pdf");
+  await page.getByRole("button", { name: "Import article", exact: true }).last().click();
+
+  await expect(page.getByRole("heading", { name: "Curb Space Allocation Review" })).toBeVisible();
+  await expect(page.locator('[data-block-id="imported-0"]')).toHaveRole("heading");
+  // Nothing to follow in a side reader: a PDF gives text positions, not anchors and hrefs.
+  await expect(page.locator(".article-body a")).toHaveCount(0);
+  await expect(page.locator(".imported-hero")).toHaveCount(0);
+
+  await page.locator('[data-block-id="imported-3"]').evaluate((element) => {
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    range.setStart(element.firstChild!, 0);
+    range.setEnd(element.firstChild!, 62);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.getByRole("button", { name: "Grow research here" }).click();
+
+  // Anchoring works off block text and offsets, so the whole layer stack applies unchanged.
+  const quote = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const selectionResult = await tools.get_current_selection.execute({});
+    const { associatedAnchorId: anchorId } = JSON.parse(selectionResult.content[0].text) as { associatedAnchorId: string };
+    await tools.add_verification.execute({
+      anchorId,
+      status: "supported",
+      summary: "The corridor count matches the report's own methodology section.",
+      sources: [{ title: "Curb Space Allocation Review", url: "https://city.example/reports/curb-space-review.pdf", sourceType: "primary" }],
+    });
+    const contextResult = await tools.get_page_context.execute({});
+    const context = JSON.parse(contextResult.content[0].text) as { anchors: Array<{ quote: string }> };
+    return context.anchors[0].quote;
+  });
+  expect(quote).toBe("Measured across twelve corridors, delivery dwell time fell whe");
+
+  await expect(page.locator(".article-body .inline-layer.verification")).toContainText("The corridor count matches the report's own methodology section.");
+  await expect(page.locator(".anchor-node-count")).toHaveText("1");
+  await page.reload();
+  await expect(page.locator("[data-anchor-id]")).toHaveCount(1);
+  expect(consoleErrors).toEqual([]);
 });
 
 test("an agent transforms a selection into a sourced Living Page and visual canvas", async ({ page }) => {

@@ -364,10 +364,16 @@ function App() {
     };
     const revealAnchor = (event: Event) => {
       const anchorId = (event as CustomEvent<string>).detail;
+      // On a narrow viewport the panel is a full-screen overlay, so scrolling the article
+      // underneath it would point at a passage nobody can see. Step out of the way first,
+      // then scroll once the reflowed layout has settled.
+      if (window.matchMedia("(max-width: 760px)").matches) setCanvasOpen(false);
       setRevealedAnchorId(anchorId);
       if (revealTimer.current) window.clearTimeout(revealTimer.current);
       revealTimer.current = window.setTimeout(() => setRevealedAnchorId(undefined), 1600);
-      document.querySelector(`[data-anchor-id="${anchorId}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      window.requestAnimationFrame(() => {
+        document.querySelector(`[data-anchor-id="${anchorId}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
     };
     window.addEventListener("livingpage:open-canvas", openCanvas);
     window.addEventListener("livingpage:open-layers", openLayers);
@@ -630,6 +636,7 @@ function App() {
                   block={block}
                   anchors={state.document.anchors.filter((anchor) => anchor.blockId === block.id)}
                   annotations={state.document.annotations}
+                  nodes={state.document.nodes}
                   activeAnchorId={activeAnchorId}
                   peekAnchorId={anchorPeek?.anchorId}
                   onAnchorHoverStart={previewAnchor}
@@ -986,6 +993,7 @@ function ArticleBlockView({
   block,
   anchors,
   annotations,
+  nodes,
   activeAnchorId,
   peekAnchorId,
   onAnchorHoverStart,
@@ -1000,6 +1008,7 @@ function ArticleBlockView({
   block: ArticleBlock;
   anchors: ResearchAnchor[];
   annotations: LivingAnnotation[];
+  nodes: ResearchNode[];
   activeAnchorId?: string;
   peekAnchorId?: string;
   onAnchorHoverStart: (id: string, trigger: HTMLElement) => void;
@@ -1022,6 +1031,9 @@ function ArticleBlockView({
   for (const anchor of sorted) {
     const anchorAnnotations = annotations.filter((annotation) => annotation.anchorId === anchor.id);
     const highlight = anchorAnnotations.find((annotation) => annotation.type === "highlight");
+    // Inline layers already sit in the text; research cards do not, so the pin counts the
+    // part of the answer that lives somewhere the reader cannot see from here.
+    const nodeCount = nodes.reduce((total, node) => (node.anchorId === anchor.id ? total + 1 : total), 0);
     parts.push(...renderLinkedText(block, cursor, anchor.startOffset, onOpenLink));
     parts.push(
       <span className="living-anchor" key={anchor.id}>
@@ -1039,8 +1051,10 @@ function ArticleBlockView({
           {renderLinkedText(block, anchor.startOffset, anchor.endOffset, onOpenLink)}
           <button
             type="button"
-            className="anchor-pin"
-            aria-label={`Preview research for: ${truncateQuote(anchor.quote, 80)}`}
+            className={nodeCount > 0 ? "anchor-pin has-cards" : "anchor-pin"}
+            aria-label={nodeCount > 0
+              ? `Preview ${nodeCount} research ${nodeCount === 1 ? "card" : "cards"} for: ${truncateQuote(anchor.quote, 80)}`
+              : `Preview research for: ${truncateQuote(anchor.quote, 80)}`}
             aria-expanded={peekAnchorId === anchor.id}
             aria-controls={`anchor-peek-${anchor.id}`}
             onPointerEnter={(event) => onAnchorHoverStart(anchor.id, event.currentTarget.parentElement ?? event.currentTarget)}
@@ -1050,7 +1064,7 @@ function ArticleBlockView({
               onAnchorPress(anchor.id, event.currentTarget.parentElement ?? event.currentTarget);
             }}
           >
-            <Link2 size={12} />
+            {nodeCount > 0 ? <span className="anchor-pin-count">{nodeCount}</span> : <Link2 size={12} />}
           </button>
         </mark>
         {highlight?.reason && <span className={`highlight-reason ${highlight.highlightType}`}>{highlight.reason}</span>}
@@ -1159,6 +1173,7 @@ function AnchorPeek({
   const firstAnnotation = summary.annotations.find((annotation) => annotation.type !== "highlight")
     ?? summary.annotations[0];
   const remainingNodes = Math.max(0, summary.nodes.length - (firstNode ? 1 : 0));
+  const remainingAnnotations = Math.max(0, summary.annotations.length - (firstAnnotation ? 1 : 0));
   const meta = firstNode ? branchMeta[firstNode.type] : undefined;
   const NodeIcon = meta?.icon ?? Sparkles;
   const CanvasIcon = canvas?.type === "map" ? MapPin : Network;
@@ -1187,20 +1202,24 @@ function AnchorPeek({
       </header>
       <div className="anchor-peek-quote">“{truncateQuote(anchor.quote, 150)}”</div>
       <AnchorBadgeList summary={summary} className="anchor-peek-badges" />
-      {firstNode ? (
+      {/* Both kinds are previewed: the badges above promise both, so showing only one
+          would leave the reader looking for a layer the peek silently dropped. */}
+      {firstNode && (
         <div className={`anchor-peek-card tone-${meta?.tone ?? "slate"}`}>
           <span className="anchor-peek-kind"><NodeIcon size={12} />{meta?.label ?? "Research"}</span>
           <strong>{firstNode.title}</strong>
           <p>{firstNode.summary}</p>
           {remainingNodes > 0 && <em>+{remainingNodes} more {remainingNodes === 1 ? "card" : "cards"}</em>}
         </div>
-      ) : annotationPreview ? (
+      )}
+      {annotationPreview && (
         <div className={`anchor-peek-card inline ${firstAnnotation.type}`}>
           <span className="anchor-peek-kind"><Sparkles size={12} />{annotationPreview.label}</span>
           {annotationPreview.title && <strong>{annotationPreview.title}</strong>}
           {annotationPreview.body && <p>{annotationPreview.body}</p>}
+          {remainingAnnotations > 0 && <em>+{remainingAnnotations} more beside the text</em>}
         </div>
-      ) : null}
+      )}
       <footer className="anchor-peek-actions">
         <button type="button" onClick={onOpenLayers}><Layers size={13} />Open in Layers</button>
         {canvas && (
@@ -1236,10 +1255,24 @@ function ResearchLayer({
   const anchors = state.document.anchors;
   const pendingRequests = state.requests.filter((request) => request.status === "pending");
   const canvasItemCount = countCanvasItems(canvasView);
+  const [expandedAnnotationIds, setExpandedAnnotationIds] = useState<Set<string>>(() => new Set());
 
   const revealAnchor = (anchorId: string) => {
     setActiveAnchorId(anchorId);
     window.dispatchEvent(new CustomEvent("livingpage:reveal-anchor", { detail: anchorId }));
+  };
+
+  /**
+   * Panel-local, deliberately not the annotation's own `isCollapsed`: expanding a layer to
+   * read it here should not fold the copy the reader is looking at beside the text.
+   */
+  const toggleInlineRow = (annotationId: string) => {
+    setExpandedAnnotationIds((current) => {
+      const next = new Set(current);
+      if (next.has(annotationId)) next.delete(annotationId);
+      else next.add(annotationId);
+      return next;
+    });
   };
 
   return (
@@ -1342,13 +1375,23 @@ function ResearchLayer({
           {anchors.map((anchor, index) => {
             const summary = getAnchorLayerSummary(state.document, anchor);
             const isActive = anchor.id === activeAnchorId;
+            // Everything attached to the passage, not just the research cards: a Verified
+            // anchor reading "0" contradicted the badge sitting right under it.
+            const attachedCount = summary.nodes.length + summary.annotations.length;
             return (
               <section key={anchor.id} className={`anchor-group ${isActive ? "active" : ""}`}>
                 <div className="anchor-heading-row">
                   <button className="anchor-heading" onClick={() => revealAnchor(anchor.id)}>
                     <span className="anchor-index">{String(index + 1).padStart(2, "0")}</span>
                     <span className="anchor-quote">“{anchor.quote}”</span>
-                    <span className="anchor-node-count">{summary.nodes.length}</span>
+                    {attachedCount > 0 && (
+                      <span
+                        className="anchor-node-count"
+                        title={`${summary.nodes.length} research ${summary.nodes.length === 1 ? "card" : "cards"} · ${summary.annotations.length} beside the text`}
+                      >
+                        {attachedCount}
+                      </span>
+                    )}
                   </button>
                   <button className="anchor-delete" onClick={() => removeResearchAnchor(anchor.id)} aria-label={`Remove anchor ${index + 1}`} title="Remove anchor and related content">
                     <Trash2 size={13} />
@@ -1360,16 +1403,13 @@ function ResearchLayer({
                     {summary.annotations.length > 0 && (
                       <div className="anchor-inline-list">
                         {summary.annotations.map((annotation) => (
-                          <button
+                          <InlineLayerRow
                             key={annotation.id}
-                            className={`anchor-inline-row ${annotation.type}`}
-                            onClick={() => revealAnchor(anchor.id)}
-                            title="Show this layer beside the text"
-                          >
-                            <span>{annotationBadge[annotation.type]}</span>
-                            <strong>{annotation.title || annotation.content || annotation.reason || annotation.status || "Beside the text"}</strong>
-                            <ArrowUpRight size={11} />
-                          </button>
+                            annotation={annotation}
+                            isExpanded={expandedAnnotationIds.has(annotation.id)}
+                            onToggle={() => toggleInlineRow(annotation.id)}
+                            onReveal={() => revealAnchor(anchor.id)}
+                          />
                         ))}
                       </div>
                     )}
@@ -1408,6 +1448,72 @@ function ResearchLayer({
         </div>
       )}
     </aside>
+  );
+}
+
+/**
+ * Two stages, because an inline layer lives beside the text rather than here: the row opens
+ * to let the reader read it without leaving the panel, and the arrow is the separate, explicit
+ * act of going to the passage it belongs to.
+ */
+function InlineLayerRow({
+  annotation,
+  isExpanded,
+  onToggle,
+  onReveal,
+}: {
+  annotation: LivingAnnotation;
+  isExpanded: boolean;
+  onToggle: () => void;
+  onReveal: () => void;
+}) {
+  const label = annotationBadge[annotation.type];
+  const heading = annotation.title || annotation.content || annotation.reason || annotation.status || "Beside the text";
+  const body = annotation.content && annotation.content !== heading ? annotation.content : undefined;
+  const reason = annotation.reason && annotation.reason !== heading ? annotation.reason : undefined;
+
+  return (
+    <div className={`anchor-inline-shell ${annotation.type} ${isExpanded ? "expanded" : ""}`}>
+      <div className="anchor-inline-row">
+        <button
+          type="button"
+          className="anchor-inline-main"
+          onClick={onToggle}
+          aria-expanded={isExpanded}
+          title={isExpanded ? "Collapse this layer" : "Read this layer here"}
+        >
+          <span>{label}</span>
+          <strong>{heading}</strong>
+          {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </button>
+        <button
+          type="button"
+          className="anchor-inline-jump"
+          onClick={onReveal}
+          title="Show this layer beside the text"
+          aria-label={`Show this ${label.toLowerCase()} layer beside the text`}
+        >
+          <ArrowUpRight size={11} />
+        </button>
+      </div>
+      {isExpanded && (
+        <div className="anchor-inline-body">
+          {annotation.status && <span className="anchor-inline-status">{annotation.status}{annotation.level ? ` · ${annotation.level}` : ""}</span>}
+          {annotation.title && <strong>{annotation.title}</strong>}
+          {body && <p>{body}</p>}
+          {reason && <p className="anchor-inline-reason">{reason}</p>}
+          {annotation.sources?.length ? (
+            <div className="anchor-inline-sources">
+              {annotation.sources.map((source) => (
+                <a key={source.url} href={source.url} target="_blank" rel="noreferrer">
+                  {source.publisher ?? source.title}<ArrowUpRight size={10} />
+                </a>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      )}
+    </div>
   );
 }
 

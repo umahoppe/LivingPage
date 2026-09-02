@@ -1,6 +1,8 @@
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
+import { extractText, getDocumentProxy, getMeta } from "unpdf";
 import type { ArticleBlock, ArticleDocument, ArticleLink } from "../src/types";
+import { blocksFromPdfPages, parsePdfDate } from "./pdf-text";
 
 interface AssetBinding {
   fetch(request: Request): Promise<Response>;
@@ -11,6 +13,10 @@ interface Env {
 }
 
 const MAX_HTML_BYTES = 2_000_000;
+/** A PDF carries its fonts and figures inline, so the HTML budget would reject ordinary reports. */
+const MAX_PDF_BYTES = 10_000_000;
+/** Text extraction is the expensive part of an import; a long PDF is truncated, not refused. */
+const MAX_PDF_PAGES = 60;
 const MAX_REDIRECTS = 4;
 
 class ImportError extends Error {
@@ -211,10 +217,10 @@ export async function extractArticle(html: string, sourceUrl: URL): Promise<Arti
   };
 }
 
-async function readLimitedHtml(response: Response) {
+async function readLimitedBytes(response: Response, limit: number, tooLarge: string) {
   const declaredSize = Number(response.headers.get("content-length") ?? 0);
-  if (declaredSize > MAX_HTML_BYTES) throw new ImportError("This page is too large to import.", 413);
-  if (!response.body) return response.text();
+  if (declaredSize > limit) throw new ImportError(tooLarge, 413);
+  if (!response.body) return new Uint8Array(await response.arrayBuffer());
 
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -223,9 +229,9 @@ async function readLimitedHtml(response: Response) {
     const { value, done } = await reader.read();
     if (done) break;
     total += value.byteLength;
-    if (total > MAX_HTML_BYTES) {
+    if (total > limit) {
       await reader.cancel();
-      throw new ImportError("This page is too large to import.", 413);
+      throw new ImportError(tooLarge, 413);
     }
     chunks.push(value);
   }
@@ -235,17 +241,21 @@ async function readLimitedHtml(response: Response) {
     merged.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return new TextDecoder().decode(merged);
+  return merged;
 }
 
-async function fetchPublicPage(initialUrl: URL) {
+type FetchedSource =
+  | { kind: "html"; html: string; finalUrl: URL }
+  | { kind: "pdf"; bytes: Uint8Array; finalUrl: URL };
+
+async function fetchPublicPage(initialUrl: URL): Promise<FetchedSource> {
   let current = initialUrl;
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
     const response = await fetch(current, {
       redirect: "manual",
       signal: AbortSignal.timeout(12_000),
       headers: {
-        accept: "text/html,application/xhtml+xml",
+        accept: "text/html,application/xhtml+xml,application/pdf",
         "user-agent": "ResearchGarden/0.1 (+https://webmcp.devpost.com)",
       },
     });
@@ -257,12 +267,68 @@ async function fetchPublicPage(initialUrl: URL) {
     }
     if (!response.ok) throw new ImportError(`The article server returned ${response.status}.`, 502);
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-    if (!contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) {
-      throw new ImportError("This URL is not an HTML article.", 415);
+    if (contentType.includes("application/pdf")) {
+      const bytes = await readLimitedBytes(response, MAX_PDF_BYTES, "This PDF is too large to import.");
+      return { kind: "pdf", bytes, finalUrl: current };
     }
-    return { html: await readLimitedHtml(response), finalUrl: current };
+    if (!contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) {
+      throw new ImportError("This URL is not an HTML article or a PDF.", 415);
+    }
+    const bytes = await readLimitedBytes(response, MAX_HTML_BYTES, "This page is too large to import.");
+    return { kind: "html", html: new TextDecoder().decode(bytes), finalUrl: current };
   }
   throw new ImportError("The article redirected too many times.", 502);
+}
+
+function filenameTitle(sourceUrl: URL) {
+  const name = decodeURIComponent(sourceUrl.pathname.split("/").pop() ?? "").replace(/\.pdf$/i, "");
+  return cleanText(name.replace(/[_-]+/g, " "));
+}
+
+/**
+ * A PDF becomes the same `ArticleDocument` an HTML import produces, so anchoring, layers,
+ * the queue, and every canvas keep working unchanged. What it cannot carry is markup: there
+ * are no in-text links to follow and no hero image, and a two-column or heavily tabular
+ * layout will read out of order because the page geometry is all the file records.
+ */
+export async function extractPdfArticle(bytes: Uint8Array, sourceUrl: URL): Promise<ArticleDocument> {
+  let pages: string[];
+  let info: Record<string, unknown>;
+  try {
+    // One proxy for both reads: the parser takes ownership of the byte array it is handed,
+    // so passing the same buffer twice leaves the second call reading a detached buffer.
+    const pdf = await getDocumentProxy(bytes);
+    const extracted = await extractText(pdf, { mergePages: false });
+    pages = extracted.text.slice(0, MAX_PDF_PAGES);
+    info = (await getMeta(pdf)).info ?? {};
+  } catch {
+    throw new ImportError("This PDF could not be read. It may be encrypted or damaged.", 422);
+  }
+
+  const blocks = blocksFromPdfPages(pages);
+  // A scanned PDF parses perfectly and yields nothing: say so rather than importing a blank article.
+  if (!pages.join("").replace(/\s/g, "")) {
+    throw new ImportError("This PDF has no text layer — it looks like a scan, and text recognition is not available here.", 422);
+  }
+  if (blocks.length < 2) throw new ImportError("The PDF did not contain enough readable article text.", 422);
+
+  const title = cleanText(typeof info.Title === "string" ? info.Title : "")
+    || filenameTitle(sourceUrl)
+    || blocks.find((block) => block.kind === "h2")?.text
+    || "Imported PDF";
+  const author = cleanText(typeof info.Author === "string" ? info.Author : "") || "Unknown author";
+
+  return {
+    id: await articleId(sourceUrl),
+    title,
+    deck: cleanText(blocks.find((block) => block.kind === "p")?.text).slice(0, 280),
+    author,
+    publishedAt: parsePdfDate(info.CreationDate) ?? parsePdfDate(info.ModDate),
+    sourceUrl: sourceUrl.toString(),
+    siteName: sourceUrl.hostname.replace(/^www\./, ""),
+    importedAt: new Date().toISOString(),
+    blocks,
+  };
 }
 
 async function handleImport(request: Request) {
@@ -274,8 +340,10 @@ async function handleImport(request: Request) {
   }
   if (typeof body.url !== "string" || body.url.length > 2_048) throw new ImportError("Enter a valid public article URL.");
   const requestedUrl = validateImportUrl(body.url);
-  const { html, finalUrl } = await fetchPublicPage(requestedUrl);
-  return extractArticle(html, finalUrl);
+  const source = await fetchPublicPage(requestedUrl);
+  return source.kind === "pdf"
+    ? extractPdfArticle(source.bytes, source.finalUrl)
+    : extractArticle(source.html, source.finalUrl);
 }
 
 function json(value: unknown, status = 200) {
