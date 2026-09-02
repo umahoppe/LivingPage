@@ -955,3 +955,79 @@ test("an agent answers with a widget the reader can operate inside a sandbox", a
   await expect(frameElement).toHaveCount(1);
   expect(consoleErrors).toEqual([]);
 });
+
+test("research nodes alone never fill the visual canvases", async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await installWebMCPStub(page);
+  await page.goto("/");
+  await expect(page.getByText("WebMCP tools registered")).toBeVisible();
+
+  await page.locator('[data-block-id="claim-growth"]').evaluate((element) => {
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    const text = element.firstChild!;
+    range.setStart(text, 0);
+    range.setEnd(text, 6);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.getByRole("button", { name: "Grow research here" }).click();
+
+  const grown = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const readResult = await tools.get_research_layer.execute({});
+    const layer = JSON.parse(readResult.content[0].text) as { revision: number; anchors: Array<{ id: string }> };
+    const createResult = await tools.create_research_nodes.execute({
+      anchorId: layer.anchors[0].id,
+      baseRevision: layer.revision,
+      operationId: "timeline-guard-1",
+      operationLabel: "Agent grew research before any visualization existed",
+      nodes: [
+        { type: "verify", title: "Verify the 20% growth claim", summary: "Check the total against an original dataset." },
+        { type: "counterpoint", title: "Test the average against regional declines", summary: "Find markets where sales slowed." },
+      ],
+    });
+    return JSON.parse(createResult.content[0].text) as { count: number };
+  });
+  expect(grown.count).toBe(2);
+
+  // Research belongs to Layers. Visual canvases stay empty until the agent explicitly creates one.
+  await page.getByRole("tab", { name: /Canvas/ }).click();
+  await page.getByRole("button", { name: "Timeline" }).click();
+  await expect(page.getByText("No timeline yet")).toBeVisible();
+  await expect(page.locator(".timeline-item")).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: /Canvas/ }).locator("span")).toHaveText("0");
+
+  await page.getByRole("button", { name: "Compare" }).click();
+  await expect(page.getByText("No comparison yet")).toBeVisible();
+  await expect(page.locator(".comparison-cell")).toHaveCount(0);
+
+  // A diagram is also an explicit visual artifact, not a second rendering of the research layer.
+  await page.getByRole("button", { name: "Diagram" }).click();
+  await expect(page.getByText("No diagram yet")).toBeVisible();
+  await expect(page.locator('[data-canvas-type="diagram"]')).toHaveCount(0);
+
+  // Once the agent builds a real timeline, it renders.
+  await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    await tools.create_visualization.execute({
+      type: "timeline",
+      title: "How the 20% was reached",
+      data: {
+        timeline: [
+          { id: "t1", date: "2023", title: "Incentives peak", description: "Purchase subsidies reach their widest coverage." },
+          { id: "t2", date: "2026", title: "Share hits 20%", description: "New registrations cross the threshold." },
+        ],
+      },
+    });
+  });
+  await expect(page.locator(".timeline-item")).toHaveCount(2);
+  await expect(page.getByText("Incentives peak")).toBeVisible();
+  await expect(page.getByRole("tab", { name: /Canvas/ }).locator("span")).toHaveText("2");
+
+  expect(consoleErrors).toEqual([]);
+});

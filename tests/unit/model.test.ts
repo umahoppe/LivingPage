@@ -129,7 +129,7 @@ describe("research graph model", () => {
 
     expect(visualized.document.annotations[0].type).toBe("explanation");
     expect(visualized.document.canvasView.type).toBe("diagram");
-    expect(undo(visualized).document.canvasView.type).toBe("research_graph");
+    expect(undo(visualized).document.canvasView.type).toBe("diagram");
     expect(undo(undo(visualized)).document.annotations).toHaveLength(0);
   });
 
@@ -153,6 +153,33 @@ describe("research graph model", () => {
     expect(removed.document.nodes).toHaveLength(0);
     expect(removed.document.sources).toHaveLength(0);
     expect(undo(removed).document.nodes).toHaveLength(1);
+  });
+
+  it("removes an unused anchor with its discarded queue request but preserves attached layers", () => {
+    const unused = stateWithAnchor();
+    const queuedUnused = enqueueRequest(unused.state, {
+      anchorId: unused.anchor.id,
+      intent: "simplify",
+      prompt: "Simplify this passage.",
+    });
+    const removedUnused = removeRequest(queuedUnused.state, queuedUnused.request.id);
+    expect(removedUnused.requests).toHaveLength(0);
+    expect(removedUnused.document.anchors).toHaveLength(0);
+
+    const completed = stateWithAnchor();
+    const explained = addAnnotation(completed.state, {
+      anchorId: completed.anchor.id,
+      type: "explanation",
+      content: "This layer has already been applied.",
+    }, "agent");
+    const queuedCompleted = enqueueRequest(explained, {
+      anchorId: completed.anchor.id,
+      intent: "explain",
+      prompt: "Explain this passage.",
+    });
+    const removedCompleted = removeRequest(queuedCompleted.state, queuedCompleted.request.id);
+    expect(removedCompleted.document.anchors).toHaveLength(1);
+    expect(removedCompleted.document.annotations).toHaveLength(1);
   });
 
   it("cascades child research-card deletion and removes image cards reversibly", () => {

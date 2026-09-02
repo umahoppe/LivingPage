@@ -142,19 +142,16 @@ function getVisiblePageContext() {
   };
 }
 
-/** Ids the reader can actually click on the current canvas, including the research-node fallback each canvas draws when the agent has sent no data of its own. */
+/** Ids the reader can actually click on the current explicitly created canvas. */
 function canvasItemIds(state: ResearchState): Set<string> {
   const { type, data } = state.document.canvasView;
-  const fallback = () => state.document.nodes.map((node) => node.id);
   switch (type) {
     case "diagram":
-      return new Set(data.diagram?.nodes.length ? data.diagram.nodes.map((node) => node.id) : fallback());
+      return new Set((data.diagram?.nodes ?? []).map((node) => node.id));
     case "timeline":
-      return new Set(data.timeline?.length ? data.timeline.map((item) => item.id) : fallback());
+      return new Set((data.timeline ?? []).map((item) => item.id));
     case "comparison_table":
-      return new Set(data.comparison?.rows.length
-        ? data.comparison.rows.map((row, index) => row.id ?? `row-${index}`)
-        : fallback());
+      return new Set((data.comparison?.rows ?? []).map((row, index) => row.id ?? `row-${index}`));
     case "image_board":
       return new Set((data.imageBoard ?? []).map((item) => item.id));
     case "map":
@@ -162,7 +159,7 @@ function canvasItemIds(state: ResearchState): Set<string> {
     case "interactive":
       return new Set(data.interactive ? [data.interactive.id] : []);
     default:
-      return new Set(fallback());
+      return new Set();
   }
 }
 
@@ -667,7 +664,7 @@ export function useWebMCP(): WebMCPStatus {
           type: "object",
           required: ["type", "title", "data"],
           properties: {
-            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table", "image_board", "map", "interactive"] },
+            type: { type: "string", enum: ["diagram", "timeline", "comparison_table", "image_board", "map", "interactive"] },
             title: { type: "string", maxLength: 120 },
             sourceNodeIds: { type: "array", items: { type: "string" }, maxItems: 30 },
             layout: { type: "string", maxLength: 60, description: "Reading direction for a Diagram canvas: \"vertical\" (default, top to bottom) or \"horizontal\" (left to right). Other canvases ignore it." },
@@ -741,7 +738,7 @@ export function useWebMCP(): WebMCPStatus {
         inputSchema: {
           type: "object",
           properties: {
-            type: { type: "string", enum: ["research_graph", "diagram", "timeline", "comparison_table", "image_board", "map", "interactive"] },
+            type: { type: "string", enum: ["diagram", "timeline", "comparison_table", "image_board", "map", "interactive"] },
             title: { type: "string", maxLength: 120 },
             sourceNodeIds: { type: "array", items: { type: "string" }, maxItems: 30 },
             layout: { type: "string", maxLength: 60, description: "Reading direction for a Diagram canvas: \"vertical\" (default, top to bottom) or \"horizontal\" (left to right). Other canvases ignore it." },

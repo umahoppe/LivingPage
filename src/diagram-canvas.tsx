@@ -8,26 +8,18 @@ import type { DiagramNode } from "./types";
 /**
  * The Diagram canvas. Dagre places the nodes and routes the edges; the nodes themselves stay
  * ordinary buttons layered over the SVG, so clicking one still opens its sourced research card.
- * With no agent-authored diagram the research layer itself is drawn as the graph.
+ * Research cards stay in Layers; this view renders only an explicitly created diagram.
  */
 export function DiagramCanvasView() {
   const { state, setSelectedNodeId, selectedNode, removeVisualizationCard } = useResearch();
   const { data, layout } = state.document.canvasView;
   const diagram = data.diagram;
-  const researchNodes = state.document.nodes;
 
   const graph = useMemo(() => {
-    const nodes = diagram?.nodes ?? researchNodes.map((node) => ({
-      id: node.id,
-      label: node.title,
-      description: node.summary,
-      sourceNodeIds: [node.id],
-    }));
-    const edges = diagram?.edges ?? researchNodes
-      .filter((node) => node.parentId)
-      .map((node) => ({ from: node.parentId!, to: node.id }));
+    const nodes = diagram?.nodes ?? [];
+    const edges = diagram?.edges ?? [];
     return layoutDiagram(nodes, edges, layout);
-  }, [diagram, researchNodes, layout]);
+  }, [diagram, layout]);
 
   const openCard = (node: DiagramNode) => {
     const nodeId = focusCanvasCard("diagram", { id: node.id, label: node.label, sourceNodeIds: node.sourceNodeIds });

@@ -103,3 +103,13 @@ Original prompt: 添付の開発指示書を起点に、Canvasではなく閲覧
 - 検証: unit 34/34、Playwright E2E 9/9、ESLint、TypeScript、production build成功。新規E2Eはエージェントがスライダーwidgetを送り、読者としてスライダーを操作し、`get_canvas_state`で値と「親document・localStorageへ到達できない」自己プローブを読み戻し、外部script参照の拒否、Resetでの状態クリア、Remove→Undoを確認した。console error 0。
 - 未完: Staged Agent Changes、Profile UI、Chart / Pros-Cons / Visual Summary、公開環境でのWebMCPライブ呼び出しとInteractive Canvasの実機確認。
 - 次アクション: Sitesへ再デプロイし、WebMCP対応ブラウザで`create_visualization(type:"interactive")`をライブ実行して、読者操作→`get_canvas_state`の往復を確認する。
+
+## 2026-09-02 — Living Page Loop 9
+
+- 問題: Loop 1で入れた「同じResearch Nodesを各Viewのfallback dataとして再利用する」設計が、Research Nodeが1件でもできた瞬間にDiagram / Timeline / Compareを自動的に埋めていた。読者はビューを切り替えるだけで中身が変わらず、Agentが組んだ可視化と機械的に導出された表示を区別できなかった。
+- 問題: fallbackの中身自体が誤りだった。Timelineは`node.createdAt`（=リサーチした操作時刻）を日付として並べるため、記事の出来事の時系列ではなく作業ログを時系列として見せていた。Compareは行同士が比較軸を共有しない「表の形をしたノード一覧」で、比較ではなかった。
+- 完了: TimelineとCompareで先行してfallbackを削除し、Agentが`create_visualization`で作るまで空状態（`EmptyVisualization`）を出すようにした。
+- 完了: ユーザーテストでResearchがLayersとCanvasに重複して見える点が判明したため、Diagramを含む全Canvasのfallbackを削除。ResearchカードはLayersだけを正本とし、CanvasはAgentが明示的に作った可視化だけを表示する。
+- 検証: unit 35/35、Playwright E2E 11/11、ESLint、TypeScript成功。新規E2Eはresearch node 2件を作った状態でDiagram / Timeline / Compareが空のまま（バッジ0）であること、Agentがtimelineを送ると2件描画されバッジが2になることを確認した。console error 0。
+- 未完: Staged Agent Changes、Profile UI、Chart / Pros-Cons / Visual Summary、公開環境でのWebMCPライブ呼び出し。
+- 次アクション: Sitesへ再デプロイし、公開URL上でResearch実行後にTimeline / Compareが空のままであることを実機確認する。

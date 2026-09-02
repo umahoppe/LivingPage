@@ -110,6 +110,7 @@ interface AnchorPeekState {
   anchorId: string;
   left: number;
   top: number;
+  width: number;
   pinned: boolean;
 }
 
@@ -281,20 +282,30 @@ function App() {
 
   const placeAnchorPeek = useCallback((anchorId: string, trigger: HTMLElement, pinned: boolean) => {
     const rect = trigger.getBoundingClientRect();
-    const width = 360;
-    const estimatedHeight = 320;
+    const preferredWidth = 320;
+    const estimatedHeight = 250;
     const pageMargin = 16;
     const articleEdge = articleRef.current?.getBoundingClientRect().right ?? window.innerWidth;
-    const roomOnRight = rect.right + 12 + width <= articleEdge - pageMargin;
-    const roomOnLeft = rect.left - 12 - width >= pageMargin;
-    const left = roomOnRight
-      ? rect.right + 12
-      : roomOnLeft
-        ? rect.left - width - 12
-        : Math.max(pageMargin, Math.min(window.innerWidth - width - pageMargin, rect.left + rect.width / 2 - width / 2));
-    const top = Math.max(76, Math.min(window.innerHeight - estimatedHeight - 76, rect.top - 18));
+    const readingEdge = articleRef.current?.querySelector<HTMLElement>(".article-inner")?.getBoundingClientRect().right
+      ?? articleEdge;
+    const panelRailLeft = articleEdge + 12;
+    const hasPanelRail = panelRailLeft + preferredWidth <= window.innerWidth - pageMargin;
+    const readingRailLeft = readingEdge + 12;
+    const readingRailWidth = window.innerWidth - readingRailLeft - pageMargin;
+    const canStayOutsideReadingColumn = readingRailWidth >= 200;
+    const width = hasPanelRail
+      ? preferredWidth
+      : canStayOutsideReadingColumn
+        ? Math.min(preferredWidth, readingRailWidth)
+        : Math.min(280, window.innerWidth - pageMargin * 2);
+    const left = hasPanelRail
+      ? panelRailLeft
+      : canStayOutsideReadingColumn
+        ? readingRailLeft
+        : window.innerWidth - width - pageMargin;
+    const top = Math.max(76, Math.min(window.innerHeight - estimatedHeight - pageMargin, rect.top - 10));
     setActiveAnchorId(anchorId);
-    setAnchorPeek({ anchorId, left, top, pinned });
+    setAnchorPeek({ anchorId, left, top, width, pinned });
   }, [setActiveAnchorId]);
 
   const previewAnchor = useCallback((anchorId: string, trigger: HTMLElement) => {
@@ -541,7 +552,7 @@ function App() {
     : undefined;
   const peekSummary = peekAnchor ? getAnchorLayerSummary(state.document, peekAnchor) : undefined;
   const peekCanvas = peekAnchor && peekSummary
-    ? getAnchorCanvasLink(state.document.canvasView, peekSummary.nodes, state.document.nodes.length)
+    ? getAnchorCanvasLink(state.document.canvasView, peekSummary.nodes)
     : undefined;
 
   return (
@@ -1145,16 +1156,25 @@ function AnchorPeek({
   onOpenCanvas: () => void;
 }) {
   const firstNode = summary.topNodes[0] ?? summary.nodes[0];
+  const firstAnnotation = summary.annotations.find((annotation) => annotation.type !== "highlight")
+    ?? summary.annotations[0];
   const remainingNodes = Math.max(0, summary.nodes.length - (firstNode ? 1 : 0));
   const meta = firstNode ? branchMeta[firstNode.type] : undefined;
   const NodeIcon = meta?.icon ?? Sparkles;
   const CanvasIcon = canvas?.type === "map" ? MapPin : Network;
+  const annotationPreview = firstAnnotation
+    ? {
+        label: annotationBadge[firstAnnotation.type],
+        title: firstAnnotation.title || (firstAnnotation.type === "verification" ? firstAnnotation.status : undefined),
+        body: firstAnnotation.content || firstAnnotation.reason,
+      }
+    : undefined;
 
   return (
     <section
       id={`anchor-peek-${anchor.id}`}
       className={`anchor-peek ${state.pinned ? "pinned" : "transient"}`}
-      style={{ left: state.left, top: state.top }}
+      style={{ left: state.left, top: state.top, width: state.width }}
       role="dialog"
       aria-modal="false"
       aria-label={`Research attached to: ${truncateQuote(anchor.quote, 90)}`}
@@ -1174,12 +1194,13 @@ function AnchorPeek({
           <p>{firstNode.summary}</p>
           {remainingNodes > 0 && <em>+{remainingNodes} more {remainingNodes === 1 ? "card" : "cards"}</em>}
         </div>
-      ) : (
-        <div className="anchor-peek-empty">
-          <Sparkles size={15} />
-          <span>No Research card yet. Open Layers to see inline work or grow this anchor.</span>
+      ) : annotationPreview ? (
+        <div className={`anchor-peek-card inline ${firstAnnotation.type}`}>
+          <span className="anchor-peek-kind"><Sparkles size={12} />{annotationPreview.label}</span>
+          {annotationPreview.title && <strong>{annotationPreview.title}</strong>}
+          {annotationPreview.body && <p>{annotationPreview.body}</p>}
         </div>
-      )}
+      ) : null}
       <footer className="anchor-peek-actions">
         <button type="button" onClick={onOpenLayers}><Layers size={13} />Open in Layers</button>
         {canvas && (
@@ -1214,7 +1235,7 @@ function ResearchLayer({
   const canvasView = state.document.canvasView;
   const anchors = state.document.anchors;
   const pendingRequests = state.requests.filter((request) => request.status === "pending");
-  const canvasItemCount = countCanvasItems(canvasView, state.document.nodes.length);
+  const canvasItemCount = countCanvasItems(canvasView);
 
   const revealAnchor = (anchorId: string) => {
     setActiveAnchorId(anchorId);
@@ -1282,7 +1303,6 @@ function ResearchLayer({
         <>
           <div className="canvas-view-switcher" aria-label="Canvas view">
             {([
-              ["research_graph", "Research", GitBranch],
               ["diagram", "Diagram", Network],
               ["timeline", "Timeline", History],
               ["comparison_table", "Compare", Table2],
@@ -1300,7 +1320,7 @@ function ResearchLayer({
             ))}
           </div>
           {canvasView.type === "research_graph"
-            ? <ResearchGraphView />
+            ? <EmptyVisualization type="diagram" />
             : <VisualizationView type={canvasView.type} />}
         </>
       ) : !anchors.length ? (
@@ -1494,49 +1514,9 @@ function RequestQueueView({ onRevealAnchor }: { onRevealAnchor: (anchorId: strin
   );
 }
 
-function ResearchGraphView() {
-  const { state, setSelectedNodeId, toggleBranch } = useResearch();
-  const nodes = state.document.nodes;
-
-  /** Opening a branch card also tells the agent which card the reader is reading. */
-  const openBranch = (nodeId: string) => {
-    const node = nodes.find((candidate) => candidate.id === nodeId);
-    focusCanvasCard("research_graph", { id: nodeId, label: node?.title ?? nodeId, sourceNodeIds: [nodeId] });
-    setSelectedNodeId(nodeId);
-  };
-
-  if (!nodes.length) return <EmptyVisualization type="research_graph" />;
-  return (
-    <div className="visualization research-graph-view" data-canvas-type="research_graph">
-      {state.document.anchors
-        .filter((anchor) => nodes.some((node) => node.anchorId === anchor.id))
-        .map((anchor) => {
-          const anchorNodes = nodes.filter((node) => node.anchorId === anchor.id);
-          return (
-            <section className="graph-group" key={anchor.id}>
-              <div className="graph-group-quote">“{anchor.quote}”</div>
-              <div className="branch-tree">
-                {anchorNodes.filter((node) => !node.parentId).map((node) => (
-                  <BranchNode
-                    key={node.id}
-                    node={node}
-                    allNodes={anchorNodes}
-                    onSelect={openBranch}
-                    onToggle={toggleBranch}
-                  />
-                ))}
-              </div>
-            </section>
-          );
-        })}
-    </div>
-  );
-}
-
 function VisualizationView({ type }: { type: Exclude<CanvasType, "research_graph"> }) {
   const { state, setSelectedNodeId, removeVisualizationCard } = useResearch();
   const { data } = state.document.canvasView;
-  const researchNodes = state.document.nodes;
   const [previewImage, setPreviewImage] = useState<ImageBoardItem>();
 
   /** Every canvas reports what the reader opened, so the agent can answer "dig into this" without a name. */
@@ -1546,19 +1526,15 @@ function VisualizationView({ type }: { type: Exclude<CanvasType, "research_graph
   };
 
   if (type === "diagram") {
-    const hasNodes = Boolean(data.diagram?.nodes.length) || researchNodes.length > 0;
+    const hasNodes = Boolean(data.diagram?.nodes.length);
     if (!hasNodes) return <EmptyVisualization type="diagram" />;
     return <DiagramCanvasView />;
   }
 
   if (type === "timeline") {
-    const items = data.timeline ?? researchNodes.map((node) => ({
-      id: node.id,
-      date: new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(node.createdAt)),
-      title: node.title,
-      description: node.summary,
-      sourceNodeIds: [node.id],
-    }));
+    // No research-node fallback: node.createdAt records when the research was made, not when the
+    // events happened, so deriving a chronology from it would show the reader a false timeline.
+    const items = data.timeline ?? [];
     if (!items.length) return <EmptyVisualization type="timeline" />;
     return (
       <div className="visualization timeline-view" data-canvas-type="timeline">
@@ -1632,16 +1608,10 @@ function VisualizationView({ type }: { type: Exclude<CanvasType, "research_graph
     );
   }
 
-  const comparison = data.comparison ?? {
-    columns: ["Perspective", "Summary", "Sources"],
-    rows: researchNodes.map((node) => ({
-      id: node.id,
-      label: branchMeta[node.type].label,
-      values: [node.title, node.summary, String(state.document.sources.filter((source) => source.nodeId === node.id).length)],
-      sourceNodeIds: [node.id],
-    })),
-  };
-  if (!comparison.rows.length) return <EmptyVisualization type="comparison_table" />;
+  // No research-node fallback either: a table of unrelated nodes shares no comparison axis, so it
+  // would look like a comparison the agent drew without being one.
+  const comparison = data.comparison;
+  if (!comparison?.rows.length) return <EmptyVisualization type="comparison_table" />;
   return (
     <div className="visualization comparison-view" data-canvas-type="comparison_table">
       <div className="comparison-table" style={{ gridTemplateColumns: `repeat(${comparison.columns.length}, minmax(120px, 1fr))` }}>
@@ -1692,17 +1662,17 @@ const emptyCanvasCopy: Record<CanvasType, { label: string; hint: string }> = {
   },
 };
 
-/** What the header counts: agent data when the canvas has it, and the research-node fallback when it does not. */
-function countCanvasItems(view: CanvasViewState, researchNodeCount: number) {
+/** What the header counts: only items that were explicitly created on the visual canvas. */
+function countCanvasItems(view: CanvasViewState) {
   switch (view.type) {
     case "research_graph":
-      return researchNodeCount;
+      return 0;
     case "diagram":
-      return view.data.diagram?.nodes.length ?? researchNodeCount;
+      return view.data.diagram?.nodes.length ?? 0;
     case "timeline":
-      return view.data.timeline?.length ?? researchNodeCount;
+      return view.data.timeline?.length ?? 0;
     case "comparison_table":
-      return view.data.comparison?.rows.length ?? researchNodeCount;
+      return view.data.comparison?.rows.length ?? 0;
     case "map":
       return view.data.map?.markers.length ?? 0;
     case "interactive":
@@ -1715,12 +1685,8 @@ function countCanvasItems(view: CanvasViewState, researchNodeCount: number) {
 function getAnchorCanvasLink(
   view: CanvasViewState,
   anchorNodes: ResearchNode[],
-  researchNodeCount: number,
 ): { type: CanvasType; label: string } | undefined {
-  if (countCanvasItems(view, researchNodeCount) === 0) return undefined;
-  if (view.type === "research_graph") {
-    return anchorNodes.length > 0 ? { type: view.type, label: canvasLabel[view.type] } : undefined;
-  }
+  if (view.type === "research_graph" || countCanvasItems(view) === 0) return undefined;
 
   const sourceNodeIds = (() => {
     switch (view.type) {

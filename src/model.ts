@@ -31,10 +31,10 @@ export const emptyDocument = (): ResearchDocument => ({
   sources: [],
   annotations: [],
   canvasView: {
-    type: "research_graph",
-    title: "Research",
+    type: "diagram",
+    title: "Diagram",
     focusedNodeIds: [],
-    layout: "branch-tree",
+    layout: "vertical",
     filters: [],
     visualConfig: {},
     data: {},
@@ -119,7 +119,20 @@ function withAnchorAuthors(document: ResearchDocument): ResearchDocument {
   };
 }
 
-const normalizeDocument = (document: ResearchDocument) => withAnchorAuthors(normalizeDocumentBlockIds(document));
+function withoutLegacyResearchCanvas(document: ResearchDocument): ResearchDocument {
+  if (document.canvasView.type !== "research_graph") return document;
+  return {
+    ...document,
+    canvasView: {
+      ...document.canvasView,
+      type: "diagram",
+      title: "Diagram",
+      layout: "vertical",
+    },
+  };
+}
+
+const normalizeDocument = (document: ResearchDocument) => withoutLegacyResearchCanvas(withAnchorAuthors(normalizeDocumentBlockIds(document)));
 
 export function normalizeResearchState(state: ResearchState): ResearchState {
   return withLiveRequests({
@@ -208,7 +221,22 @@ export function resolveRequest(
 }
 
 export function removeRequest(state: ResearchState, requestId: string): ResearchState {
-  return { ...state, requests: state.requests.filter((request) => request.id !== requestId) };
+  const request = state.requests.find((candidate) => candidate.id === requestId);
+  if (!request) return state;
+  const withoutRequest = { ...state, requests: state.requests.filter((candidate) => candidate.id !== requestId) };
+  if (!request.anchorId || withoutRequest.requests.some((candidate) => candidate.anchorId === request.anchorId)) {
+    return withoutRequest;
+  }
+
+  const anchor = state.document.anchors.find((candidate) => candidate.id === request.anchorId);
+  const hasAttachedLayer = state.document.annotations.some((annotation) => annotation.anchorId === request.anchorId)
+    || state.document.nodes.some((node) => node.anchorId === request.anchorId);
+  if (!anchor || anchor.createdBy !== "human" || hasAttachedLayer) return withoutRequest;
+
+  return commitDocument(withoutRequest, {
+    ...state.document,
+    anchors: state.document.anchors.filter((candidate) => candidate.id !== request.anchorId),
+  }, "Removed an unused queued anchor", "human");
 }
 
 export function clearResolvedRequests(state: ResearchState): ResearchState {
@@ -373,10 +401,10 @@ export function replaceArticle(state: ResearchState, article: ArticleDocument): 
     sources: [],
     annotations: [],
     canvasView: {
-      type: "research_graph",
-      title: "Research",
+      type: "diagram",
+      title: "Diagram",
       focusedNodeIds: [],
-      layout: "branch-tree",
+      layout: "vertical",
       filters: [],
       visualConfig: {},
       data: {},
@@ -614,6 +642,9 @@ export function setCanvasView(
   input: Partial<CanvasViewState> & Pick<CanvasViewState, "type">,
   actor: Actor,
 ): ResearchState {
+  if (input.type === "research_graph") {
+    throw new Error("Research cards belong in Layers. Create a Diagram, Timeline, Comparison, Image Board, Map, or Interactive canvas instead.");
+  }
   const nextView: CanvasViewState = {
     ...state.document.canvasView,
     ...input,

@@ -306,9 +306,14 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
   }, [flashActivity]);
 
   const removeQueuedRequest = useCallback((requestId: string) => {
+    const request = stateRef.current.requests.find((candidate) => candidate.id === requestId);
     const next = removeRequestFromState(stateRef.current, requestId);
     stateRef.current = next;
     setState(next);
+    if (request?.anchorId && !next.document.anchors.some((anchor) => anchor.id === request.anchorId)) {
+      setActiveAnchorId(next.document.anchors[0]?.id);
+      setCurrentSelection((selection) => selection?.associatedAnchorId === request.anchorId ? undefined : selection);
+    }
     flashActivity("Request removed from the queue");
   }, [flashActivity]);
 
