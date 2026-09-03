@@ -526,16 +526,38 @@ mark .article-link { color: #24513a; }
 .command-chip strong { font-size: 9px; font-weight: 700; letter-spacing: .03em; }
 .command-chip > span { font-family: Georgia, serif; font-size: 10px; color: #5d6e63; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .command-bar button { display: inline-flex; align-items: center; gap: 5px; }
+.command-bar .command-mode { flex: none; height: 28px; padding: 0 9px; border: 1px solid #c9d8ce; border-radius: 8px; background: #f1f5f1; color: #5d6e63; font-size: 9px; font-weight: 700; letter-spacing: .03em; }
+.command-bar .command-mode:hover { border-color: #a5c0af; background: #e6eee8; color: #35664a; }
+.command-bar .command-mode.active { border-color: #2f6849; background: #e9f1eb; color: #2f6849; }
 .command-bar button.copied { background: #24513a; }
 .command-feedback { max-width: 210px; }
 
 /* Marks waiting on their passage, in place of the queue tab that used to hold them */
 .pending-request-list { display: flex; flex-direction: column; gap: 6px; padding: 13px 0 4px; }
 .pending-request { display: grid; grid-template-columns: auto 1fr 22px; gap: 8px; align-items: start; padding: 9px 10px; border: 1px dashed #c6cfc7; border-radius: 9px; background: rgba(255,255,255,.5); }
-.pending-request-intent { display: inline-flex; align-items: center; gap: 4px; height: 17px; padding: 0 7px; border: 1px solid #cfe0d5; border-radius: 999px; background: #e8f2ec; color: #3f6d51; font-size: 8px; font-weight: 700; letter-spacing: .04em; }
-.pending-request p { margin: 1px 0 0; color: #66756b; font-size: 9px; line-height: 1.6; }
-.pending-request button { width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent; color: #a9b0a8; display: grid; place-items: center; cursor: pointer; }
-.pending-request button:hover { background: #f5e7e6; color: #9e4b45; }
+.pending-request.selected { border-style: solid; border-color: #9dbfa9; background: #f2f8f4; }
+.pending-request-check { width: 13px; height: 13px; margin: 3px 0 0; accent-color: #3f6d51; cursor: pointer; }
+.pending-request-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pending-request-intent { display: inline-flex; align-self: flex-start; align-items: center; gap: 4px; height: 17px; padding: 0 7px; border: 1px solid #cfe0d5; border-radius: 999px; background: #e8f2ec; color: #3f6d51; font-size: 8px; font-weight: 700; letter-spacing: .04em; }
+.pending-request p { margin: 0; color: #66756b; font-size: 9px; line-height: 1.6; }
+.pending-request-note { display: grid; grid-template-columns: auto 1fr 18px; gap: 5px; align-items: start; padding: 5px 6px; border-radius: 7px; background: #eef4ef; color: #3f6d51; }
+.pending-request-note > svg { margin-top: 2px; }
+.pending-request-note p { color: #3f6d51; font-size: 9px; white-space: pre-wrap; }
+.pending-request-note button { width: 18px; height: 18px; }
+.pending-request > button, .pending-request-note button { border: 0; border-radius: 6px; background: transparent; color: #a9b0a8; display: grid; place-items: center; cursor: pointer; }
+.pending-request > button { width: 22px; height: 22px; }
+.pending-request > button:hover, .pending-request-note button:hover { background: #f5e7e6; color: #9e4b45; }
+
+.queue-instruction-bar { position: sticky; bottom: 0; z-index: 5; display: flex; flex-direction: column; gap: 6px; padding: 10px 13px 12px; border-top: 1px solid #dbe3dc; background: #f7faf7; box-shadow: 0 -8px 18px rgba(43,58,46,.07); }
+.queue-instruction-head { display: flex; align-items: center; justify-content: space-between; color: #3f6d51; font-size: 9px; font-weight: 700; letter-spacing: .04em; }
+.queue-instruction-head span { display: inline-flex; align-items: center; gap: 5px; }
+.queue-instruction-head button { border: 0; background: transparent; color: #8d968c; font-size: 9px; cursor: pointer; }
+.queue-instruction-head button:hover { color: #3f6d51; }
+.queue-instruction-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; }
+.queue-instruction-row input { min-width: 0; padding: 7px 9px; border: 1px solid #cfe0d5; border-radius: 8px; background: #fff; color: #3d463c; font: inherit; font-size: 10px; }
+.queue-instruction-row input:focus { outline: 2px solid #b9d5c3; outline-offset: -1px; }
+.queue-instruction-row button { padding: 0 11px; border: 0; border-radius: 8px; background: #3f6d51; color: #fff; font-size: 9px; font-weight: 700; letter-spacing: .03em; cursor: pointer; }
+.queue-instruction-row button:disabled { background: #c3cec6; cursor: default; }
 .anchor-group.document-scope { border-style: dashed; }
 .anchor-heading.static { display: grid; grid-template-columns: 27px 1fr 24px; gap: 9px; align-items: center; padding: 15px; text-align: left; }
 .anchor-heading.static .anchor-quote { font-family: inherit; font-size: 11px; font-style: italic; color: #6b7570; }

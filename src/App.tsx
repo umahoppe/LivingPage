@@ -19,6 +19,7 @@ import {
   ListChecks,
   LoaderCircle,
   MapPin,
+  MessageSquareText,
   Network,
   PanelRightClose,
   PanelRightOpen,
@@ -90,6 +91,31 @@ const actionPrompts = {
 
 type SelectionIntent = keyof typeof actionPrompts;
 
+/**
+ * A term question is a whole-article Explain: the reader names the words, the agent finds every
+ * place they appear. The first line is what the panel shows the reader; the rest is written for
+ * the agent, and is what keeps ten occurrences from becoming ten identical explanation cards.
+ */
+function termExplainPrompt(term: string) {
+  return [
+    `Explain “${term}” wherever it appears in this article.`,
+    `Read get_article_blocks first, then anchor with anchor_passage and this requestId only the places where “${term}” actually carries the meaning I am asking about — pass occurrence when the same words repeat in one block. Put a single insert_inline_explanation on the first of those anchors, written for a reader meeting the term here, and mark the remaining ones with add_highlight so I can see where else it matters instead of reading the same explanation again.`,
+  ].join("\n");
+}
+
+/**
+ * The three asks the panel offers once a passage is open. They are the same marks the selection
+ * menu makes — queued, visible to the agent, cleared when it answers — with the angle carried as
+ * the reader's note. They used to write a research card on the spot, which put an unanswered
+ * to-do in the research layer where sourced findings live and never reached the queue at all.
+ */
+const quickAsks = [
+  { key: "verify", intent: "verify", label: "Verify", icon: ShieldCheck, note: "Find an official statistic or primary source that confirms this claim." },
+  { key: "why", intent: "research", label: "Why?", icon: Search, note: "Explain the underlying causes and the conditions behind this statement." },
+  { key: "counterpoint", intent: "research", label: "Counterpoint", icon: GitBranch, note: "Find contrary evidence, regional differences, or a credible opposing view." },
+] as const satisfies ReadonlyArray<{ key: string; intent: SelectionIntent; label: string; icon: typeof ShieldCheck; note: string }>;
+
+
 const HANDOFF_LINE = "Process my marks.";
 
 function buildQueueHandoffPrompt() {
@@ -97,9 +123,11 @@ function buildQueueHandoffPrompt() {
     "Use the WebMCP tools registered by the open Living Page.",
     "1. Call get_pending_requests. That list is my request, in the order I marked it in the article; do not ask me to restate it in chat.",
     "2. Read get_visible_page_context and get_research_layer once before writing, so you do not repeat what is already on the page.",
+    "An entry with a note carries my own words for that mark: follow the note over the preset prompt wherever they differ.",
     "3. Work through the queue in order. For each entry use its anchorId with the tool that fits its intent: insert_inline_explanation, insert_simplified_layer, insert_image_layer, add_highlight, add_verification, create_research_nodes, add_research_source, create_visualization, update_visualization, or set_map_view.",
     "Before handling Visualize entries, collect every pending Visualize mark. The canvas holds one result, so when there are several, create one combined visualization that explicitly represents every marked quote. Call create_visualization once and pass sourceAnchorIds containing every included anchorId; do not overwrite one mark with another.",
     "An entry with scope \"document\" is about the whole article and has no anchor yet: read get_article_blocks, then anchor the exact words you are answering about with anchor_passage and that requestId. Anchor only what my request actually needs.",
+    "When a document entry is about one term or phrase that recurs, explain it once on its first occurrence and connect the others with add_highlight; do not stack the same explanation on ten passages.",
     "The canvas holds one thing at a time: a Map, or one interactive widget. A diagram, a chronology, and a comparison are all widgets you write yourself.",
     "Match the widget to what the passage actually is: a stepped flow diagram for a process or mechanism, a scrubbable timeline for events in order, a labelled schematic or tree for a structure, sliders over the assumptions for a rule about quantities, a chart for numbers, one named axis for things being compared, an annotated concept map for concepts with no numbers. A sortable table is the last resort, not the default.",
     "For a map, supply real WGS84 latitude and longitude for every marker yourself; the page does not geocode place names.",
@@ -222,6 +250,31 @@ const requestIntentLabel: Record<PendingRequest["intent"], string> = {
   custom: "Ask",
 };
 
+/**
+ * What the card says to the reader. The queued `prompt` is written for the agent — the
+ * Visualize one is a decision table nobody wants to read in a card — so the panel shows this
+ * line instead and keeps the agent's wording on the tooltip. A custom ask shows its own words.
+ */
+const requestIntentSummary: Record<PendingRequest["intent"], string> = {
+  explain: "Explain this passage beside the text.",
+  simplify: "Rewrite this passage in simpler words.",
+  visualize: "Turn this into a diagram, a chronology, or something you can operate.",
+  research: "Grow sourced research branches around this.",
+  verify: "Check this claim against reliable sources.",
+  custom: "Your own ask for this passage.",
+};
+
+/**
+ * What the card says. A custom ask shows its own words; a document-scoped preset writes its own
+ * first line for the reader and keeps the rest of the prompt for the agent, so the card shows that
+ * line rather than the passage wording of the preset it borrowed.
+ */
+function requestSummaryText(request: PendingRequest) {
+  if (request.intent === "custom") return request.prompt;
+  if (request.anchorId === null && request.prompt.includes("\n")) return request.prompt.split("\n")[0];
+  return requestIntentSummary[request.intent];
+}
+
 async function copyText(text: string) {
   try {
     if (navigator.clipboard?.writeText) {
@@ -296,6 +349,8 @@ function App() {
   const [commandIntent, setCommandIntent] = useState<PendingRequest["intent"]>();
   const [commandValue, setCommandValue] = useState("");
   const [commandFeedback, setCommandFeedback] = useState<string>();
+  // A term ask is still a whole-article request; the toggle only changes what the reader types.
+  const [termMode, setTermMode] = useState(false);
   const [handoffCopied, setHandoffCopied] = useState(false);
   const [browserInput, setBrowserInput] = useState("");
   const [browserLoading, setBrowserLoading] = useState(false);
@@ -617,15 +672,20 @@ function App() {
     // No selection is not an error: the request is simply about the whole article,
     // and the agent anchors the passages it actually answers about.
     const anchorId = currentSelection?.associatedAnchorId ?? null;
-    const prompt = commandValue.trim();
-    if (!prompt) {
-      setCommandFeedback(anchorId ? "Type what this passage needs" : "Type what this article needs");
+    const value = commandValue.trim();
+    const asksAboutTerm = termMode && anchorId === null;
+    if (!value) {
+      setCommandFeedback(asksAboutTerm
+        ? "Type the term to explain"
+        : anchorId ? "Type what this passage needs" : "Type what this article needs");
       return;
     }
-    queueRequest({ anchorId, intent: "custom", prompt });
-    setCommandIntent("custom");
+    const intent = asksAboutTerm ? "explain" : "custom";
+    queueRequest({ anchorId, intent, prompt: asksAboutTerm ? termExplainPrompt(value) : value });
+    setCommandIntent(intent);
     setCommandValue("");
     setCommandFeedback(undefined);
+    setTermMode(false);
   };
 
   /** The queue has no tab of its own any more, so the handoff text is copied from the pill that counts it. */
@@ -639,6 +699,7 @@ function App() {
     setCommandIntent(undefined);
     setCommandValue("");
     setCommandFeedback(undefined);
+    setTermMode(false);
     setCurrentSelection(undefined);
   };
 
@@ -892,14 +953,29 @@ function App() {
             <X size={11} />
           </button>
         ) : (
-          <Sparkles size={15} />
+          <button
+            type="button"
+            className={termMode ? "command-mode active" : "command-mode"}
+            onClick={() => {
+              setTermMode((current) => !current);
+              setCommandFeedback(undefined);
+              commandRef.current?.focus();
+            }}
+            aria-pressed={termMode}
+            aria-label="Explain a term wherever it appears"
+            title="Name a term and your agent finds every place it appears, explains it once, and marks the rest"
+          >
+            <Sparkles size={13} /><span>Explain a term</span>
+          </button>
         )}
         <input
           ref={commandRef}
           aria-label="Ask the Living Page"
           placeholder={currentSelection?.associatedAnchorId
             ? "Add another request for this passage…"
-            : "Ask about the whole article, or select a passage first"}
+            : termMode
+              ? "Which term? Your agent finds every place it appears…"
+              : "Explain a term wherever it appears, or ask about the whole article"}
           value={commandValue}
           onChange={(event) => setCommandValue(event.target.value)}
         />
@@ -1478,10 +1554,11 @@ function ResearchLayer({
     activeAnchorId,
     setActiveAnchorId,
     setSelectedNodeId,
-    addQuickBranch,
+    queueRequest,
     toggleBranch,
     removeResearchAnchor,
     removeQueuedRequest,
+    noteQueuedRequests,
     clearResolvedQueue,
   } = useResearch();
   const canvasView = state.document.canvasView;
@@ -1492,6 +1569,18 @@ function ResearchLayer({
   const resolvedRequests = state.requests.filter((request) => request.status !== "pending");
   const canvasItemCount = countCanvasItems(canvasView);
   const [expandedAnnotationIds, setExpandedAnnotationIds] = useState<Set<string>>(() => new Set());
+  // Ticked marks, kept as raw ids: a resolved or removed request simply stops matching.
+  const [selectedRequestIds, setSelectedRequestIds] = useState<Set<string>>(() => new Set());
+  const selectedPendingIds = pendingRequests.filter((request) => selectedRequestIds.has(request.id)).map((request) => request.id);
+
+  const toggleRequestSelection = (requestId: string) => {
+    setSelectedRequestIds((current) => {
+      const next = new Set(current);
+      if (next.has(requestId)) next.delete(requestId);
+      else next.add(requestId);
+      return next;
+    });
+  };
 
   const revealAnchor = (anchorId: string) => {
     setActiveAnchorId(anchorId);
@@ -1570,7 +1659,7 @@ function ResearchLayer({
           </div>
           <div className="step-label">STEP 01</div>
           <h3>Select a claim in the article</h3>
-          <p>Highlight a sentence on the left and choose Explain, Simplify, Visualize, Research, or Verify. Each choice waits here instead of interrupting you, and you keep reading. For a question about the article as a whole, type it in the ask bar with nothing selected. When you are done reading, tell your agent once.</p>
+          <p>Highlight a sentence on the left and choose Explain, Simplify, Visualize, Research, or Verify. Each choice waits here instead of interrupting you, and you keep reading. For a question about the article as a whole, type it in the ask bar with nothing selected — or name a term there and your agent explains it wherever it appears. When you are done reading, tell your agent once.</p>
           <div className="agent-hint"><Bot size={16} /><span>Your agent reads this layer through WebMCP and clears each mark itself.</span></div>
         </div>
       ) : (
@@ -1596,7 +1685,13 @@ function ResearchLayer({
                 ))}
               </div>
               <div className="anchor-content">
-                <PendingRequestList requests={documentRequests} onRemove={removeQueuedRequest} />
+                <PendingRequestList
+                  requests={documentRequests}
+                  selectedIds={selectedRequestIds}
+                  onToggleSelect={toggleRequestSelection}
+                  onClearNote={(requestId) => noteQueuedRequests([requestId], "")}
+                  onRemove={removeQueuedRequest}
+                />
               </div>
             </section>
           )}
@@ -1630,7 +1725,13 @@ function ResearchLayer({
                 {isActive && (
                   <div className="anchor-content">
                     {summary.waiting.length > 0 && (
-                      <PendingRequestList requests={summary.waiting} onRemove={removeQueuedRequest} />
+                      <PendingRequestList
+                        requests={summary.waiting}
+                        selectedIds={selectedRequestIds}
+                        onToggleSelect={toggleRequestSelection}
+                        onClearNote={(requestId) => noteQueuedRequests([requestId], "")}
+                        onRemove={removeQueuedRequest}
+                      />
                     )}
                     {summary.annotations.length > 0 && (
                       <div className="anchor-inline-list">
@@ -1665,11 +1766,17 @@ function ResearchLayer({
                       </div>
                     )}
                     <div className="quick-grow">
-                      <span>Grow a branch</span>
+                      <span>Ask for more here</span>
                       <div>
-                        <button onClick={() => addQuickBranch(anchor.id, "verify")}><ShieldCheck size={13} />Verify</button>
-                        <button onClick={() => addQuickBranch(anchor.id, "why")}><Search size={13} />Why?</button>
-                        <button onClick={() => addQuickBranch(anchor.id, "counterpoint")}><GitBranch size={13} />Counterpoint</button>
+                        {quickAsks.map((ask) => (
+                          <button
+                            key={ask.key}
+                            onClick={() => queueRequest({ anchorId: anchor.id, intent: ask.intent, prompt: actionPrompts[ask.intent], note: ask.note })}
+                            title={ask.note}
+                          >
+                            <ask.icon size={13} />{ask.label}
+                          </button>
+                        ))}
                       </div>
                     </div>
                   </div>
@@ -1703,35 +1810,128 @@ function ResearchLayer({
           )}
         </div>
       )}
+
+      {tab === "layers" && selectedPendingIds.length > 0 && (
+        <QueueInstructionBar
+          selectedCount={selectedPendingIds.length}
+          onApply={(note) => {
+            noteQueuedRequests(selectedPendingIds, note);
+            setSelectedRequestIds(new Set());
+          }}
+          onClear={() => setSelectedRequestIds(new Set())}
+        />
+      )}
     </aside>
   );
 }
 
-/** A mark that has not landed yet, shown where it was made rather than in a queue of its own. */
+/**
+ * A mark that has not landed yet, shown where it was made rather than in a queue of its own.
+ * The checkbox is how the reader adds their own instruction: tick the marks the instruction is
+ * about, write it once in the composer below, and it rides along as the request's note.
+ */
 function PendingRequestList({
   requests,
+  selectedIds,
+  onToggleSelect,
+  onClearNote,
   onRemove,
 }: {
   requests: PendingRequest[];
+  selectedIds: Set<string>;
+  onToggleSelect: (requestId: string) => void;
+  onClearNote: (requestId: string) => void;
   onRemove: (requestId: string) => void;
 }) {
   return (
     <div className="pending-request-list">
-      {requests.map((request) => (
-        <div key={request.id} className="pending-request">
-          <span className="pending-request-intent"><ListChecks size={11} />{requestIntentLabel[request.intent]}</span>
-          <p>{request.prompt}</p>
-          <button
-            type="button"
-            onClick={() => onRemove(request.id)}
-            aria-label={`Remove the queued ${requestIntentLabel[request.intent]} request`}
-            title="Remove this request"
-          >
-            <Trash2 size={12} />
-          </button>
-        </div>
-      ))}
+      {requests.map((request) => {
+        const label = requestIntentLabel[request.intent];
+        const summary = requestSummaryText(request);
+        return (
+          <div key={request.id} className={`pending-request ${selectedIds.has(request.id) ? "selected" : ""}`}>
+            <input
+              type="checkbox"
+              className="pending-request-check"
+              checked={selectedIds.has(request.id)}
+              onChange={() => onToggleSelect(request.id)}
+              aria-label={`Select the ${label} mark to instruct your agent about it`}
+            />
+            <div className="pending-request-body">
+              <span className="pending-request-intent"><ListChecks size={11} />{label}</span>
+              <p title={request.prompt}>{summary}</p>
+              {request.note && (
+                <div className="pending-request-note">
+                  <MessageSquareText size={11} />
+                  <p>{request.note}</p>
+                  <button
+                    type="button"
+                    onClick={() => onClearNote(request.id)}
+                    aria-label={`Remove your instruction on the ${label} mark`}
+                    title="Remove your instruction"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => onRemove(request.id)}
+              aria-label={`Remove the queued ${label} request`}
+              title="Remove this request"
+            >
+              <Trash2 size={12} />
+            </button>
+          </div>
+        );
+      })}
     </div>
+  );
+}
+
+/**
+ * One composer for however many marks are ticked, so "in Japanese" or "only primary sources"
+ * is written once rather than per card. It writes the reader's words onto each selected
+ * request as its note; the agent reads notes as the narrower version of the preset prompt.
+ */
+function QueueInstructionBar({
+  selectedCount,
+  onApply,
+  onClear,
+}: {
+  selectedCount: number;
+  onApply: (note: string) => void;
+  onClear: () => void;
+}) {
+  const [value, setValue] = useState("");
+  const marks = `${selectedCount} ${selectedCount === 1 ? "mark" : "marks"}`;
+
+  return (
+    <form
+      className="queue-instruction-bar"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const note = value.trim();
+        if (!note) return;
+        onApply(note);
+        setValue("");
+      }}
+    >
+      <div className="queue-instruction-head">
+        <span><MessageSquareText size={12} />{marks} selected</span>
+        <button type="button" onClick={onClear}>Clear</button>
+      </div>
+      <div className="queue-instruction-row">
+        <input
+          aria-label={`Tell your agent what to do with the ${marks} you selected`}
+          placeholder="Only the term itself · in Japanese · primary sources only…"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+        />
+        <button type="submit" disabled={!value.trim()}>Add instruction</button>
+      </div>
+    </form>
   );
 }
 

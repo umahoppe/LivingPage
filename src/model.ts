@@ -228,6 +228,22 @@ export function enqueueRequest(
   return { state: { ...state, requests: [...state.requests, request] }, request };
 }
 
+/**
+ * The reader's own words on a queued mark. The preset prompt says what the button meant;
+ * this says what the reader actually wants, so the agent reads it as the narrower instruction.
+ * Requests live outside the document history, so writing a note is not an undoable edit.
+ */
+export function noteRequests(state: ResearchState, requestIds: string[], note: string): ResearchState {
+  const targets = new Set(requestIds);
+  const text = note.trim();
+  const requests = state.requests.map((request) => {
+    if (!targets.has(request.id) || request.status !== "pending") return request;
+    const merged = text && request.note ? `${request.note}\n${text}` : text || undefined;
+    return { ...request, note: merged };
+  });
+  return { ...state, requests };
+}
+
 export function resolveRequest(
   state: ResearchState,
   requestId: string,

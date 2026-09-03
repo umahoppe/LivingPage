@@ -213,7 +213,7 @@ function describeRequest(state: ResearchState, request: PendingRequest) {
       : intentToolHints[request.intent],
     scopeNote: scope === "document"
       ? "The reader asked about the whole article, so no anchor exists yet. Read get_article_blocks, then call anchor_passage with this requestId and the exact words you are answering about; use the anchorId it returns with the tool that fits the intent."
-      : "The reader anchored this passage. Use its anchorId directly. If the answer genuinely depends on another passage, anchor_passage with this requestId can add one more.",
+      : "The reader anchored this passage. Use its anchorId directly. When note is present, follow it over the preset prompt. If the answer genuinely depends on another passage, anchor_passage with this requestId can add one more.",
     derivedAnchorIds: derivedAnchors.map((candidate) => candidate.id),
     anchorBudgetLeft: Math.max(0, MAX_DERIVED_ANCHORS_PER_REQUEST - derivedAnchors.length),
     existingLayers: [...new Set(annotations.map((annotation) => annotation.type))],
@@ -261,7 +261,7 @@ function readPendingRequests(includeResolved: boolean, limit: number) {
     } : null,
     requests: selected.map((request) => describeRequest(state, request)),
     nextStep: pending.length
-      ? "Work through the pending requests in order. Combine all Visualize marks into the one canvas result and pass every included anchorId as sourceAnchorIds. An entry with scope \"passage\" already carries the reader's anchorId; an entry with scope \"document\" covers the whole article, so read get_article_blocks and anchor the exact words you answer about with anchor_passage first. Apply each one with the page-changing tool that fits its intent, then call resolve_request with its requestId so the reader sees it clear."
+      ? "Work through the pending requests in order. Where an entry has a note, that note is the reader's own instruction for this mark and narrows or overrides its preset prompt. Combine all Visualize marks into the one canvas result and pass every included anchorId as sourceAnchorIds. An entry with scope \"passage\" already carries the reader's anchorId; an entry with scope \"document\" covers the whole article, so read get_article_blocks and anchor the exact words you answer about with anchor_passage first. When a document entry names one term or phrase that recurs, explain it once on its first occurrence and connect the others with add_highlight rather than repeating the same explanation on every anchor. Apply each one with the page-changing tool that fits its intent, then call resolve_request with its requestId so the reader sees it clear."
       : "The reader has not marked anything yet. Ask them to select article text and choose an action from the selection menu.",
   };
 }
@@ -372,7 +372,7 @@ export function useWebMCP(): WebMCPStatus {
       {
         name: "get_pending_requests",
         title: "Read the reader's request queue",
-        description: "Read the requests the reader queued by marking passages in the article. This is the reader's own list of what to do, in the order they marked it: each entry carries the intent, the exact anchored quote, its surrounding context, and the tools that fit. Call this first whenever the reader asks you to handle, process, or work through their marks — do not ask them to restate each request in chat.",
+        description: "Read the requests the reader queued by marking passages in the article. This is the reader's own list of what to do, in the order they marked it: each entry carries the intent, the exact anchored quote, its surrounding context, and the tools that fit. An entry whose note is not null carries the reader's own words about that mark — treat the note as the narrower instruction and let it override the preset prompt wherever the two differ. Call this first whenever the reader asks you to handle, process, or work through their marks — do not ask them to restate each request in chat.",
         inputSchema: {
           type: "object",
           properties: {

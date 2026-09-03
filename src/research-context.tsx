@@ -25,6 +25,7 @@ import {
   removeAnchor as removeAnchorFromState,
   removeAnnotation as removeAnnotationFromState,
   removeCanvasItem as removeCanvasItemFromState,
+  noteRequests,
   removeRequest as removeRequestFromState,
   removeResearchNode as removeResearchNodeFromState,
   redo as redoState,
@@ -40,7 +41,6 @@ import type {
   AnchorPassageInput,
   AnnotationInput,
   ArticleDocument,
-  BranchType,
   CanvasViewState,
   NodeInput,
   PendingRequest,
@@ -98,7 +98,6 @@ interface ResearchContextValue {
   goForward: () => void;
   createNodes: (command: CreateNodesCommand, actor: Actor) => ResearchNode[];
   addSourceToNode: (nodeId: string, source: SourceInput, actor: Actor) => void;
-  addQuickBranch: (anchorId: string, type: BranchType) => void;
   toggleBranch: (nodeId: string) => void;
   addLivingAnnotation: (input: AnnotationInput, actor: Actor) => void;
   toggleLivingAnnotation: (annotationId: string) => void;
@@ -110,6 +109,7 @@ interface ResearchContextValue {
   queueRequest: (input: RequestInput) => PendingRequest;
   resolveQueuedRequest: (requestId: string, resolution: RequestResolution) => PendingRequest;
   removeQueuedRequest: (requestId: string) => void;
+  noteQueuedRequests: (requestIds: string[], note: string) => void;
   clearResolvedQueue: () => void;
   undo: () => void;
   redo: () => void;
@@ -162,21 +162,6 @@ function persistBrowsingSession(session: BrowsingSession) {
     }
   }
 }
-
-const quickBranches: Record<"verify" | "why" | "counterpoint", Pick<NodeInput, "title" | "summary">> = {
-  verify: {
-    title: "Verify this claim",
-    summary: "Find an official statistic or primary source that confirms the claim.",
-  },
-  why: {
-    title: "What explains this?",
-    summary: "Investigate the underlying causes and the conditions behind this statement.",
-  },
-  counterpoint: {
-    title: "Look for exceptions",
-    summary: "Find contrary evidence, regional differences, or a credible opposing view.",
-  },
-};
 
 export function ResearchProvider({ children }: { children: ReactNode }) {
   const [initialSession] = useState(loadBrowsingSession);
@@ -307,12 +292,6 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     flashActivity(actor === "agent" ? "Agent attached a source" : "Source attached");
   }, [flashActivity]);
 
-  const addQuickBranch = useCallback((anchorId: string, type: BranchType) => {
-    if (!(type in quickBranches)) return;
-    const preset = quickBranches[type as keyof typeof quickBranches];
-    createNodes({ anchorId, nodes: [{ type, ...preset }] }, "human");
-  }, [createNodes]);
-
   const toggleBranch = useCallback((nodeId: string) => {
     const next = toggleNode(stateRef.current, nodeId);
     stateRef.current = next;
@@ -408,6 +387,17 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     flashActivity("Request removed from the queue");
   }, [flashActivity]);
 
+  const noteQueuedRequests = useCallback((requestIds: string[], note: string) => {
+    const next = noteRequests(stateRef.current, requestIds, note);
+    stateRef.current = next;
+    setState(next);
+    flashActivity(!note.trim()
+      ? "Your instruction removed"
+      : requestIds.length > 1
+        ? `Your instruction added to ${requestIds.length} marks`
+        : "Your instruction added to the mark");
+  }, [flashActivity]);
+
   const clearResolvedQueue = useCallback(() => {
     const next = clearResolvedRequests(stateRef.current);
     stateRef.current = next;
@@ -455,7 +445,6 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     goForward,
     createNodes,
     addSourceToNode,
-    addQuickBranch,
     toggleBranch,
     addLivingAnnotation,
     toggleLivingAnnotation,
@@ -467,6 +456,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     queueRequest,
     resolveQueuedRequest,
     removeQueuedRequest,
+    noteQueuedRequests,
     clearResolvedQueue,
     undo,
     redo,
@@ -484,7 +474,6 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     navigation,
     createNodes,
     addSourceToNode,
-    addQuickBranch,
     toggleBranch,
     addLivingAnnotation,
     toggleLivingAnnotation,
@@ -496,6 +485,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     queueRequest,
     resolveQueuedRequest,
     removeQueuedRequest,
+    noteQueuedRequests,
     clearResolvedQueue,
     undo,
     redo,

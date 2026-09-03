@@ -1488,3 +1488,169 @@ test("research nodes alone never fill the canvas, and a widget can still open on
 
   expect(consoleErrors).toEqual([]);
 });
+
+test("the reader ticks marks and writes the instruction the preset cannot carry", async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await installWebMCPStub(page);
+  await page.goto("/");
+  await expect(page.getByText("WebMCP tools registered")).toBeVisible();
+
+  const markPassage = async (blockId: string, action: string, length: number) => {
+    await page.locator(`[data-block-id="${blockId}"]`).scrollIntoViewIfNeeded();
+    await page.locator(`[data-block-id="${blockId}"]`).evaluate((element, chars) => {
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+      const text = element.firstChild!;
+      range.setStart(text, 0);
+      range.setEnd(text, chars);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+    }, length);
+    await page.getByRole("button", { name: action }).click();
+  };
+
+  await markPassage("claim-growth", "Explain selection", 30);
+  await markPassage("regional-gap", "Visualize selection", 24);
+
+  // The card reads as a sentence to the reader; the agent's own wording stays on the tooltip.
+  const visualizeCard = page.locator(".pending-request").first();
+  await expect(visualizeCard.locator("p").first())
+    .toHaveText("Turn this into a diagram, a chronology, or something you can operate.");
+  await expect(visualizeCard.locator("p").first()).toHaveAttribute("title", /flow diagram/);
+
+  // Tick the visible mark, open the earlier passage, tick that one too: the ticks accumulate.
+  await visualizeCard.locator(".pending-request-check").check();
+  await expect(page.locator(".queue-instruction-head")).toContainText("1 mark selected");
+  await page.locator(".anchor-group").first().locator(".anchor-heading").click();
+  await page.locator(".anchor-group").first().locator(".pending-request-check").check();
+  await expect(page.locator(".queue-instruction-head")).toContainText("2 marks selected");
+
+  await page.locator(".queue-instruction-row input").fill("Answer in Japanese, primary sources only.");
+  await page.getByRole("button", { name: "Add instruction" }).click();
+
+  // Applying clears the ticks, and the instruction is now visible on each card it was meant for.
+  await expect(page.locator(".queue-instruction-bar")).toHaveCount(0);
+  await expect(page.locator(".pending-request-note").first()).toContainText("primary sources only");
+  await page.screenshot({ path: "output/playwright/queue-instruction.png", fullPage: false });
+
+  const queue = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const result = await tools.get_pending_requests.execute({});
+    return JSON.parse(result.content[0].text) as {
+      nextStep: string;
+      requests: Array<{ intent: string; note: string | null }>;
+    };
+  });
+  expect(queue.requests.map((request) => request.note)).toEqual([
+    "Answer in Japanese, primary sources only.",
+    "Answer in Japanese, primary sources only.",
+  ]);
+  // The agent is told which of the two wordings is the reader's.
+  expect(queue.nextStep).toContain("narrows or overrides");
+
+  // Taking the instruction back off one mark leaves the other one carrying it.
+  await page.locator(".pending-request-note button").first().click();
+  const afterClear = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const result = await tools.get_pending_requests.execute({});
+    return (JSON.parse(result.content[0].text) as { requests: Array<{ note: string | null }> }).requests;
+  });
+  expect(afterClear.filter((request) => request.note).length).toBe(1);
+
+  // "Ask for more here" queues a mark with its angle as the note. It must not write a research
+  // card: an unanswered to-do sitting among sourced findings is what this replaced.
+  await page.locator(".anchor-group").first().locator(".quick-grow button", { hasText: "Counterpoint" }).click();
+  const afterAsk = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const queued = JSON.parse((await tools.get_pending_requests.execute({})).content[0].text) as {
+      pendingCount: number;
+      requests: Array<{ intent: string; note: string | null }>;
+    };
+    const layer = JSON.parse((await tools.get_research_layer.execute({})).content[0].text) as { nodes: unknown[] };
+    return { queued, nodeCount: layer.nodes.length };
+  });
+  expect(afterAsk.queued.pendingCount).toBe(3);
+  expect(afterAsk.queued.requests.at(-1)).toMatchObject({
+    intent: "research",
+    note: "Find contrary evidence, regional differences, or a credible opposing view.",
+  });
+  expect(afterAsk.nodeCount).toBe(0);
+
+  expect(consoleErrors).toEqual([]);
+});
+
+test("a term ask explains the word once and marks where else it appears", async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await installWebMCPStub(page);
+  await page.goto("/");
+  await expect(page.getByText("WebMCP tools registered")).toBeVisible();
+
+  // The reader names a term instead of a passage: nothing is selected and nothing is anchored yet.
+  await page.getByRole("button", { name: "Explain a term wherever it appears" }).click();
+  await page.getByRole("textbox", { name: "Ask the Living Page" }).fill("incentives");
+  await page.getByRole("textbox", { name: "Ask the Living Page" }).press("Enter");
+
+  await expect(page.locator(".anchor-group.document-scope .pending-request")).toHaveCount(1);
+  // The card shows the reader's own line, not the passage wording of the Explain preset.
+  await expect(page.locator(".anchor-group.document-scope")).toContainText(
+    "Explain “incentives” wherever it appears in this article.",
+  );
+  await expect(page.locator(".research-mark")).toHaveCount(0);
+
+  const queue = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    return JSON.parse((await tools.get_pending_requests.execute({})).content[0].text) as {
+      requests: Array<{ requestId: string; intent: string; scope: string; prompt: string; suggestedTools: string[] }>;
+    };
+  });
+  expect(queue.requests[0]).toMatchObject({ intent: "explain", scope: "document" });
+  expect(queue.requests[0].prompt).toContain("occurrence");
+  expect(queue.requests[0].suggestedTools).toContain("anchor_passage");
+
+  // The agent anchors both places the term appears, explains it once, and marks the other.
+  const applied = await page.evaluate(async (requestId: string) => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const first = JSON.parse((await tools.anchor_passage.execute({
+      requestId,
+      quote: "purchase incentives",
+    })).content[0].text) as { anchorId: string; blockId: string };
+    const second = JSON.parse((await tools.anchor_passage.execute({
+      requestId,
+      quote: "incentives expired",
+    })).content[0].text) as { anchorId: string; blockId: string };
+
+    await tools.insert_inline_explanation.execute({
+      anchorId: first.anchorId,
+      title: "Purchase incentive",
+      explanation: "A subsidy or tax break that lowers what a buyer pays, used to move demand before costs fall on their own.",
+      level: "Beginner",
+    });
+    await tools.add_highlight.execute({
+      anchorId: second.anchorId,
+      highlightType: "important",
+      reason: "Same term, opposite direction: the incentive ends here.",
+    });
+    await tools.resolve_request.execute({ requestId, summary: "Explained the term once and marked the other occurrence." });
+    return { first, second };
+  }, queue.requests[0].requestId);
+
+  expect(applied.first.blockId).toBe("market-context");
+  expect(applied.second.blockId).toBe("regional-gap");
+
+  await expect(page.locator(".research-mark")).toHaveCount(2);
+  await expect(page.locator(".research-mark.highlight-important")).toHaveCount(1);
+  await expect(page.locator(".inline-layer-body strong")).toHaveText("Purchase incentive");
+  // The explanation is not repeated on the second occurrence.
+  await expect(page.locator(".inline-layer")).toHaveCount(1);
+  await expect(page.locator(".anchor-group.document-scope")).toHaveCount(0);
+  await expect(page.getByText("Explained the term once and marked the other occurrence.")).toBeVisible();
+
+  expect(consoleErrors).toEqual([]);
+});

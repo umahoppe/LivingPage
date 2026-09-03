@@ -12,7 +12,7 @@ Imported articles form a small research browser. Every `<a href>` is resolved ag
 
 1. Import a public article URL, or use the built-in demo article.
 2. Select a sentence and choose Explain, Simplify, Visualize, Research, or Verify. Follow any in-article link in the side reader when the source itself answers the question.
-3. The selection becomes a durable text anchor and the choice waits on that passage in the **Layers** tab — nothing is copied to the clipboard, and nothing is sent yet. Keep reading and mark as many passages as you like; the ask bar adds free-text requests for anything the five presets do not cover, and with nothing selected it asks about the article as a whole.
+3. The selection becomes a durable text anchor and the choice waits on that passage in the **Layers** tab — nothing is copied to the clipboard, and nothing is sent yet. Keep reading and mark as many passages as you like; the ask bar adds free-text requests for anything the five presets do not cover, and with nothing selected it asks about the article as a whole — or, with **Explain a term** on, names a word and lets the agent find every place it appears.
 4. Say one sentence in your agent chat — *Process my marks.* A WebMCP-capable agent reads the whole queue, works through it in the order you marked it, and updates the article or Visual Thinking Canvas.
 5. The Canvas holds whatever the agent last sent: a Map of the places involved, or an interactive widget it wrote — a diagram, a chronology, a comparison you can re-sort, a model you can operate. There is no view to pick; the agent decides the shape and the underlying sources never change.
 6. Track every anchored passage in the Layers tab — inline explanations, simplifications, highlights, verifications, and research cards all stay listed with the passage they belong to, and selecting one scrolls the article back to it.
@@ -41,6 +41,8 @@ The agent then drives the whole batch itself. `get_pending_requests` returns the
 ## Who may anchor
 
 Anchoring is the reader's act: selecting a passage is how attention enters the page, and every anchor made that way is recorded as theirs. But a reader can only mark what they already noticed, and a question about the whole article — *verify the strongest statistic here* — has no passage to attach to. So the queue takes document-scoped requests too, and an agent may derive the anchors such a request needs.
+
+A term question is the clearest case. **Explain a term** in the ask bar turns *quantitative easing* into a whole-article Explain: the agent reads `get_article_blocks`, anchors the places the term actually carries that meaning — `occurrence` separates repeats of the same words — explains it once beside the first of them, and marks the rest with `add_highlight` rather than stacking the same card on ten passages. The reader named a word, not a position, and the passages still come back to them as anchors they can open, remove, or undo.
 
 That permission is deliberately narrow. `anchor_passage` requires the `requestId` of a request still pending, so the agent anchors only inside work the reader asked for and never on its own initiative. It supplies the words, not the position: the page locates the quote in the article itself and refuses one it cannot find, so an invented quote cannot become an anchor. One request yields at most ten anchors. Anchors made this way are marked **Agent anchored** in the Layers tab, carry the request they came from, and are removed, cascaded, and undone exactly like the reader's own.
 
