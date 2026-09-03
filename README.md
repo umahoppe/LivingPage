@@ -137,8 +137,10 @@ worker/
 tests/
   unit/                 model, HTML import, PDF import
   e2e/                  the WebMCP host injection suite
-docs/                   architecture notes, submission draft, screenshots
+docs/                   architecture notes, build log, submission draft, screenshots
 ```
+
+The build log — every working session with what was completed, what was verified, and what was left open — is in [docs/progress.md](./docs/progress.md).
 
 ## Known limits
 

@@ -7,7 +7,7 @@ Working copy for the submission form. Fill the two placeholders (live URL, video
 - [ ] **Live URL**, reachable in ChatGPT’s in-app browser or Chrome with WebMCP enabled
 - [ ] **Text description** — the sections below
 - [ ] **Demo video** — public YouTube, under 3 minutes, with audio
-- [ ] **Public repo** — https://github.com/umahoppe/webmcp_research_tree, MIT licensed, README with setup instructions
+- [ ] **Repo made public** (currently private) — https://github.com/umahoppe/LivingPage, MIT licensed, README with setup instructions
 - [ ] README live-demo and video links filled in
 
 ---
