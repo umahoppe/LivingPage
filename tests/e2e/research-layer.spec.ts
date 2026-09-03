@@ -1576,9 +1576,33 @@ test("the reader ticks marks and writes the instruction the preset cannot carry"
   expect(afterAsk.queued.pendingCount).toBe(3);
   expect(afterAsk.queued.requests.at(-1)).toMatchObject({
     intent: "research",
-    note: "Find contrary evidence, regional differences, or a credible opposing view.",
+    note: /^Find contrary evidence, regional differences, or a credible opposing view\./,
   });
   expect(afterAsk.nodeCount).toBe(0);
+
+  // The open passage owns the ask bar, so a follow-up in the reader's own words reaches the same
+  // anchor without going back to the article and selecting those words a second time.
+  await expect(page.locator(".command-chip")).toContainText("Global EV sales increased");
+  await page.getByRole("textbox", { name: "Ask the Living Page" }).fill("Who publishes this number?");
+  await page.getByRole("textbox", { name: "Ask the Living Page" }).press("Enter");
+  const afterTyped = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const queued = JSON.parse((await tools.get_pending_requests.execute({})).content[0].text) as {
+      pendingCount: number;
+      requests: Array<{ intent: string; scope: string; prompt: string; anchorId: string | null }>;
+    };
+    const layer = JSON.parse((await tools.get_research_layer.execute({})).content[0].text) as {
+      anchors: Array<{ id: string }>;
+    };
+    return { queued, firstAnchorId: layer.anchors[0].id };
+  });
+  expect(afterTyped.queued.pendingCount).toBe(4);
+  expect(afterTyped.queued.requests.at(-1)).toMatchObject({
+    intent: "custom",
+    scope: "passage",
+    prompt: "Who publishes this number?",
+    anchorId: afterTyped.firstAnchorId,
+  });
 
   expect(consoleErrors).toEqual([]);
 });

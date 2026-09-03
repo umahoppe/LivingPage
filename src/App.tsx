@@ -104,15 +104,19 @@ function termExplainPrompt(term: string) {
 }
 
 /**
- * The three asks the panel offers once a passage is open. They are the same marks the selection
+ * The two asks the panel offers once a passage is open. They are the same marks the selection
  * menu makes — queued, visible to the agent, cleared when it answers — with the angle carried as
  * the reader's note. They used to write a research card on the spot, which put an unanswered
  * to-do in the research layer where sourced findings live and never reached the queue at all.
+ *
+ * These are not a menu of every follow-up: the ask bar binds to whichever passage is open, so
+ * anything typed there reaches the same anchor. What earns a button is a move the reader would
+ * not make unprompted — which is why Verify, a duplicate of the selection menu's own Verify,
+ * is not one of them.
  */
 const quickAsks = [
-  { key: "verify", intent: "verify", label: "Verify", icon: ShieldCheck, note: "Find an official statistic or primary source that confirms this claim." },
   { key: "why", intent: "research", label: "Why?", icon: Search, note: "Explain the underlying causes and the conditions behind this statement." },
-  { key: "counterpoint", intent: "research", label: "Counterpoint", icon: GitBranch, note: "Find contrary evidence, regional differences, or a credible opposing view." },
+  { key: "counterpoint", intent: "research", label: "Counterpoint", icon: GitBranch, note: "Find contrary evidence, regional differences, or a credible opposing view. If the passage has no credible opposing view — a definition, a date, a plain fact — resolve this as skipped and say so rather than manufacturing an objection." },
 ] as const satisfies ReadonlyArray<{ key: string; intent: SelectionIntent; label: string; icon: typeof ShieldCheck; note: string }>;
 
 
@@ -347,6 +351,8 @@ function App() {
   const [anchorPeek, setAnchorPeek] = useState<AnchorPeekState>();
   const [revealedAnchorId, setRevealedAnchorId] = useState<string>();
   const [commandIntent, setCommandIntent] = useState<PendingRequest["intent"]>();
+  /** Which passage that intent was for: opening another anchor must not relabel its chip. */
+  const [commandAnchorId, setCommandAnchorId] = useState<string>();
   const [commandValue, setCommandValue] = useState("");
   const [commandFeedback, setCommandFeedback] = useState<string>();
   // A term ask is still a whole-article request; the toggle only changes what the reader types.
@@ -661,6 +667,7 @@ function App() {
     });
     queueRequest({ anchorId: anchor.id, intent, prompt: actionPrompts[intent] });
     setCommandIntent(intent);
+    setCommandAnchorId(anchor.id);
     setCommandValue("");
     setCommandFeedback(undefined);
     setPending(undefined);
@@ -683,6 +690,7 @@ function App() {
     const intent = asksAboutTerm ? "explain" : "custom";
     queueRequest({ anchorId, intent, prompt: asksAboutTerm ? termExplainPrompt(value) : value });
     setCommandIntent(intent);
+    setCommandAnchorId(anchorId ?? undefined);
     setCommandValue("");
     setCommandFeedback(undefined);
     setTermMode(false);
@@ -697,6 +705,7 @@ function App() {
 
   const clearRequest = () => {
     setCommandIntent(undefined);
+    setCommandAnchorId(undefined);
     setCommandValue("");
     setCommandFeedback(undefined);
     setTermMode(false);
@@ -948,7 +957,11 @@ function App() {
       <form className="command-bar" onSubmit={submitCommand}>
         {currentSelection?.associatedAnchorId ? (
           <button type="button" className="command-chip" onClick={clearRequest} aria-label="Clear the current request">
-            <strong>{commandIntent ? requestIntentLabel[commandIntent] : "Selection"}</strong>
+            <strong>
+              {commandIntent && commandAnchorId === currentSelection.associatedAnchorId
+                ? requestIntentLabel[commandIntent]
+                : "Selection"}
+            </strong>
             <span>“{truncateQuote(currentSelection.quote)}”</span>
             <X size={11} />
           </button>
@@ -1555,6 +1568,7 @@ function ResearchLayer({
     setActiveAnchorId,
     setSelectedNodeId,
     queueRequest,
+    setCurrentSelection,
     toggleBranch,
     removeResearchAnchor,
     removeQueuedRequest,
@@ -1582,8 +1596,26 @@ function ResearchLayer({
     });
   };
 
+  /**
+   * Opening a passage here also points the ask bar at it. Without this the bar only ever bound to
+   * a fresh text selection, so a follow-up on an already-anchored passage meant going back to the
+   * article and selecting the same words again — and the quick asks were the only way around it.
+   */
   const revealAnchor = (anchorId: string) => {
     setActiveAnchorId(anchorId);
+    const anchor = state.document.anchors.find((candidate) => candidate.id === anchorId);
+    if (anchor) {
+      setCurrentSelection({
+        selectionType: "text",
+        blockId: anchor.blockId,
+        quote: anchor.quote,
+        prefix: anchor.prefix,
+        suffix: anchor.suffix,
+        startOffset: anchor.startOffset,
+        endOffset: anchor.endOffset,
+        associatedAnchorId: anchor.id,
+      });
+    }
     window.dispatchEvent(new CustomEvent("livingpage:reveal-anchor", { detail: anchorId }));
   };
 
