@@ -106,7 +106,8 @@ interface ResearchContextValue {
   removeResearchCard: (nodeId: string) => void;
   removeVisualizationCard: (itemId: string) => void;
   changeCanvasView: (input: Partial<CanvasViewState> & Pick<CanvasViewState, "type">, actor: Actor) => void;
-  queueRequest: (input: RequestInput) => PendingRequest;
+  /** `revealPanel` opens the research panel on the queued request; marking a passage leaves it as it was. */
+  queueRequest: (input: RequestInput, options?: { revealPanel?: boolean }) => PendingRequest;
   resolveQueuedRequest: (requestId: string, resolution: RequestResolution) => PendingRequest;
   removeQueuedRequest: (requestId: string) => void;
   noteQueuedRequests: (requestIds: string[], note: string) => void;
@@ -353,12 +354,12 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     flashActivity(actor === "agent" ? "Agent transformed the canvas" : "Canvas view changed");
   }, [flashActivity]);
 
-  const queueRequest = useCallback((input: RequestInput) => {
+  const queueRequest = useCallback((input: RequestInput, options?: { revealPanel?: boolean }) => {
     const result = enqueueRequest(stateRef.current, input);
     stateRef.current = result.state;
     setState(result.state);
     if (result.request.anchorId) setActiveAnchorId(result.request.anchorId);
-    window.dispatchEvent(new CustomEvent("livingpage:open-layers"));
+    if (options?.revealPanel !== false) window.dispatchEvent(new CustomEvent("livingpage:open-layers"));
     flashActivity("Added to the request queue");
     return result.request;
   }, [flashActivity]);

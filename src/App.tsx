@@ -665,7 +665,9 @@ function App() {
       endOffset: pending.endOffset,
       associatedAnchorId: anchor.id,
     });
-    queueRequest({ anchorId: anchor.id, intent, prompt: actionPrompts[intent] });
+    // Marking a passage should not pull the reader out of the article: the request lands in the
+    // queue and the panel stays exactly as the reader left it.
+    queueRequest({ anchorId: anchor.id, intent, prompt: actionPrompts[intent] }, { revealPanel: false });
     setCommandIntent(intent);
     setCommandAnchorId(anchor.id);
     setCommandValue("");
