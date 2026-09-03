@@ -74,14 +74,16 @@ interface PendingSelection extends AnchorInput {
 const SELECTION_MENU_WIDTH = 330;
 
 /**
- * One visual action, not four. Which shape the answer takes — a diagram, a chronology, a
- * comparison, a map, or something the reader can operate — is the agent's judgement, and the
- * reader narrows it in the ask bar when they care.
+ * One visual action, not four. Which shape the answer takes is the agent's judgement, so the
+ * Visualize prompt hands it a decision table — what the passage is, then the form that fits —
+ * rather than a list of shapes; without it every answer collapses into the same sortable table.
+ * The reader narrows it further in the ask bar when they care.
  */
 const actionPrompts = {
   explain: "Explain this selection for a beginner and place the explanation beside the text.",
   simplify: "Rewrite this selection in simpler language without replacing the original.",
-  visualize: "Show this selection on the canvas as whatever makes it clearest — a diagram, a chronology, a comparison, or a small app I can operate. Build it as one self-contained interactive widget; use the Map canvas instead only when the answer is really about places. If you compare things, name the comparison axis, keep every row on that same axis, and put the rows where the difference actually shows first. If pictures are the answer, put them beside the text with insert_image_layer instead.",
+  visualize:
+    "Show this selection on the canvas. First decide, in one line, what kind of thing the passage describes, then build the form that matches it: a process, mechanism, or cause-and-effect chain → a flow diagram of boxes and arrows I can step through; events in order → a timeline I can scrub, on the real dates in the passage; parts of a whole, or a structure → a labelled schematic or tree; a rule or a relationship between quantities → a model whose sliders change its assumptions and show what they do; numbers across categories or over time → a chart, a line for time and bars for categories, with detail on hover; things being compared → one named comparison axis, every row measured on it, the rows where the difference actually shows first, re-sortable; concepts with no numbers → an annotated concept map, never a table. Match the control to the form as well, and give the result a title that states the point. Build it as one self-contained interactive widget; use the Map canvas instead only when the answer is really about places, and put pictures beside the text with insert_image_layer. A table of bars is the last resort for a numeric passage, not the default.",
   research: "Research what is missing around this selection and grow sourced branches.",
   verify: "Verify this claim with reliable sources and add the result beside the text.",
 } as const;
@@ -99,6 +101,7 @@ function buildQueueHandoffPrompt() {
     "Before handling Visualize entries, collect every pending Visualize mark. The canvas holds one result, so when there are several, create one combined visualization that explicitly represents every marked quote. Call create_visualization once and pass sourceAnchorIds containing every included anchorId; do not overwrite one mark with another.",
     "An entry with scope \"document\" is about the whole article and has no anchor yet: read get_article_blocks, then anchor the exact words you are answering about with anchor_passage and that requestId. Anchor only what my request actually needs.",
     "The canvas holds one thing at a time: a Map, or one interactive widget. A diagram, a chronology, and a comparison are all widgets you write yourself.",
+    "Match the widget to what the passage actually is: a stepped flow diagram for a process or mechanism, a scrubbable timeline for events in order, a labelled schematic or tree for a structure, sliders over the assumptions for a rule about quantities, a chart for numbers, one named axis for things being compared, an annotated concept map for concepts with no numbers. A sortable table is the last resort, not the default.",
     "For a map, supply real WGS84 latitude and longitude for every marker yourself; the page does not geocode place names.",
     "For an interactive canvas, send one self-contained html document with inline styles and script — nothing loads from a CDN, so draw any chart as inline SVG or on a canvas — call livingPage.setState(value) whenever I change something so you can read it back, and livingPage.openCard(nodeId) on anything built from a research card so I can open it.",
     "Pictures go beside the text with insert_image_layer, not on the canvas: the canvas sandbox cannot load an external image.",

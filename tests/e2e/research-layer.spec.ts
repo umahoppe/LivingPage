@@ -1092,12 +1092,15 @@ test("a Visualize mark reaches the canvas without any research registered first"
     const result = await tools.get_pending_requests.execute({});
     return JSON.parse(result.content[0].text) as {
       requests: Array<{ requestId: string; intent: string; prompt: string; suggestedTools: string[] }>;
+      visualizeBatch: { formGuide: string[] };
     };
   });
   expect(queue.requests.map((request) => request.intent)).toEqual(["visualize"]);
   expect(queue.requests[0].suggestedTools).toContain("create_visualization");
-  // One intent now covers every visual shape, so the prompt is what tells the agent to choose.
-  expect(queue.requests[0].prompt).toMatch(/name the comparison axis/);
+  // One intent now covers every visual shape, so the prompt carries the table the agent chooses from.
+  expect(queue.requests[0].prompt).toMatch(/flow diagram/);
+  expect(queue.requests[0].prompt).toMatch(/one named comparison axis/);
+  expect(queue.visualizeBatch.formGuide.join(" ")).toMatch(/concept map/);
 
   // The agent answers it straight from the article: no research node exists yet.
   const comparisonHtml = `
@@ -1291,7 +1294,7 @@ test("an agent answers with a widget the reader can operate inside a sandbox", a
   });
   expect(queue.requests.map((request) => request.intent)).toEqual(["visualize"]);
   expect(queue.requests[0].suggestedTools).toContain("create_visualization");
-  expect(queue.requests[0].prompt).toMatch(/a small app I can operate/);
+  expect(queue.requests[0].prompt).toMatch(/sliders change its assumptions/);
 
   const widgetHtml = `
 <h1>Break-even year</h1>

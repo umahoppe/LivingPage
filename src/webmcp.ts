@@ -223,6 +223,23 @@ function describeRequest(state: ResearchState, request: PendingRequest) {
   };
 }
 
+/**
+ * The Visualize intent covers every visual shape, so the agent needs a rule for choosing one.
+ * Without this table it reads "interactive" as "a table the reader can re-sort" every time.
+ * The same table lives in the create_visualization description and the selection-menu prompt.
+ */
+const VISUALIZE_FORM_GUIDE = [
+  "Decide what the marked passage is, then build the form that matches it:",
+  "process, mechanism, or cause-and-effect chain -> a flow diagram of boxes and arrows the reader steps through",
+  "events in order -> a timeline the reader scrubs, on the passage's own dates",
+  "parts of a whole, or a structure -> a labelled schematic or tree",
+  "a rule or a relationship between quantities -> a model whose sliders change its assumptions",
+  "numbers across categories or over time -> a chart, a line for time and bars for categories, with detail on hover",
+  "things being compared -> one named comparison axis, every row measured on it, differences first, re-sortable",
+  "concepts with no numbers -> an annotated concept map, never a table",
+  "A sortable table is the last resort for a numeric passage, not the default shape.",
+];
+
 function readPendingRequests(includeResolved: boolean, limit: number) {
   const bridge = requireBridge();
   const state = bridge.getState();
@@ -237,6 +254,7 @@ function readPendingRequests(includeResolved: boolean, limit: number) {
     returnedCount: selected.length,
     visualizeBatch: visualizeAnchorIds.length ? {
       sourceAnchorIds: visualizeAnchorIds,
+      formGuide: VISUALIZE_FORM_GUIDE,
       instruction: visualizeAnchorIds.length > 1
         ? "Create one combined visualization that explicitly represents every marked quote. Call create_visualization once with all sourceAnchorIds; the single canvas must not be overwritten once per mark."
         : "Pass this sourceAnchorId to create_visualization so the passage remains linked to its canvas result.",
@@ -714,7 +732,7 @@ export function useWebMCP(): WebMCPStatus {
 
 Map data uses map.markers items with id, label, lat, lng, note, kind, sourceUrl, sourceLabel, and sourceNodeIds, plus optional map.center {lat,lng}, map.zoom (1-19), and map.focusMarkerId; supply real WGS84 coordinates yourself, since the page does not geocode place names.
 
-Interactive data uses interactive with id, title, note, sourceNodeIds, and html: one self-contained document body with inline <style> and <script> and no external references, at most ${MAX_INTERACTIVE_HTML_CHARACTERS} characters. Build something the reader can work, not a lone slider: controls that change the assumptions the passage makes, and feedback that shows what those assumptions do. When you are drawing a comparison, name the comparison axis in the header, keep every row measured on that same axis, put the rows where the difference actually shows first, and let the reader re-sort or highlight only the differences — a static table of unrelated rows is what this replaced. It runs in a sandboxed frame with no network, no storage, and no access to this page, so build everything you need inline: no CDN script, stylesheet, font, or image will load, so draw charts as inline <svg> or on a <canvas> and write any icon yourself. The frame measures the natural height of your document and caps it at ${MAX_INTERACTIVE_FRAME_HEIGHT}px, so lay the widget out in ordinary document flow — 100vh, height:100%, and position:fixed collapse it to nothing. The surrounding page is light, so keep the widget light too. Two calls reach back out of the frame: livingPage.setState(value) whenever the reader changes something, which you read back with get_canvas_state, and livingPage.openCard(nodeId) to open one research card — wire it to any element you built from a research node, using the ids from get_research_layer, so a click still reaches the sourced card behind it. The underlying research data remains unchanged.`,
+Interactive data uses interactive with id, title, note, sourceNodeIds, and html: one self-contained document body with inline <style> and <script> and no external references, at most ${MAX_INTERACTIVE_HTML_CHARACTERS} characters. Decide what the marked passage actually is before you write any markup, then build the form that matches it: a process, mechanism, or cause-and-effect chain → a flow diagram of boxes and arrows the reader steps through; events in order → a timeline the reader scrubs, on the passage's own dates; parts of a whole, or a structure → a labelled schematic or tree; a rule or a relationship between quantities → a model whose sliders change its assumptions; numbers across categories or over time → a chart, a line for time and bars for categories, with detail on hover; things being compared → one named comparison axis with every row measured on it, the rows where the difference actually shows first, re-sortable; concepts with no numbers → an annotated concept map rather than a table. Match the control to the form too — step buttons for a process, a scrubber for a timeline, sliders for a model, hover for a chart, re-sorting only for a comparison — so "interactive" does not collapse into the same sortable table every time; that table is the last resort for a numeric passage, not the default. Build something the reader can work, not a lone slider: controls that change the assumptions the passage makes, and feedback that shows what those assumptions do. Give the widget a title that states the point. It runs in a sandboxed frame with no network, no storage, and no access to this page, so build everything you need inline: no CDN script, stylesheet, font, or image will load, so draw charts as inline <svg> or on a <canvas> and write any icon yourself. The frame measures the natural height of your document and caps it at ${MAX_INTERACTIVE_FRAME_HEIGHT}px, so lay the widget out in ordinary document flow — 100vh, height:100%, and position:fixed collapse it to nothing. The surrounding page is light, so keep the widget light too. Two calls reach back out of the frame: livingPage.setState(value) whenever the reader changes something, which you read back with get_canvas_state, and livingPage.openCard(nodeId) to open one research card — wire it to any element you built from a research node, using the ids from get_research_layer, so a click still reaches the sourced card behind it. The underlying research data remains unchanged.`,
         inputSchema: {
           type: "object",
           required: ["type", "title", "data"],
