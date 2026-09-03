@@ -28,6 +28,14 @@ Original prompt: 添付の開発指示書を起点に、Canvasではなく閲覧
 - 未完: ログイン必須、JS描画、Paywall、400,000文字超のSnapshotは元ページどおりには表示できず、従来の構造化readerへフォールバックする。外部Web検索結果の取得はAgent側で行う。
 - 次アクション: Sitesへ公開する場合は、現行の未コミット変更全体をレビューし、公開環境でWebMCP Agentによる検索Request→Source追加までライブ確認する。
 
+## 2026-09-03 — Submission Loop 1
+
+- 完了: Anchor作成時にResearch panelが開かないようにした。`queueRequest`へ`{ revealPanel?: boolean }`を追加し、`confirmAnchor`だけ`false`で呼ぶ。Agentの結果反映（`anchor_passage`、注釈追加、`resolve_request`、canvas更新）は従来どおりpanelを開く。
+- 完了: 提出用にREADMEを再構成した。冒頭にpitch、Live demo／Demo video／Devpostのリンク表、実画面スクリーンショット3点、90秒のTry it、19 toolsの読み書き表、WebMCP設計判断5点、安全性、検証、既知の制限を配置。深い参照情報は`docs/architecture.md`へ移し、Devpost提出テキスト草案とデモ動画構成を`docs/devpost-submission.md`に追加した。
+- 検証: unit 44/44、TypeScript build成功、E2E 3本を再実行して`docs/images/`のスクリーンショットを現行UIから生成。Tool数19（read 7 / write 12）とE2E 18本を実コードから数え直して記述を修正。
+- 未完: Live URLとYouTube動画URLがREADMEとDevpost草案でplaceholderのまま。公開デプロイと動画収録、Devpost提出は未実施。
+- 次アクション: 公開URLへデプロイし、WebMCP対応ブラウザでライブ確認してから2箇所のplaceholderを埋め、動画を録ってDevpostへ提出する。
+
 ## 2026-09-01 — Loop 1
 
 - 完了: 空リポジトリとブランチ状態を確認。Anchor型MVPの受け入れ条件、React/Vite構成、Research data model、履歴モデルを確定。
