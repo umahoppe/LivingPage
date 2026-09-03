@@ -2,6 +2,32 @@
 
 Original prompt: 添付の開発指示書を起点に、Canvasではなく閲覧中の文章へAnchorされたResearch Layerとして実装を進める。
 
+## 2026-09-03 — Research Browser Loop 1
+
+- 完了: HTMLインポートを`ArticleBlock[]`と安全な`snapshotHtml`の二重表現にした。Readability後の同じDOMでBlock ID付与とSnapshot生成を行い、元ページのclass、記事内画像、最大16件のHTTPS stylesheet、inline styleを保持する。
+- 安全性: Snapshotからscript、frame/embed、form controls、event属性、meta refresh、危険URLを除去し、CSPでscript/connect/frame/object/form送信を拒否。400,000文字を超えるSnapshotは従来レンダラーへフォールバックする。
+- 検証: HTML import unit 5/5成功。危険要素除去、stylesheet絶対URL化、Block ID一致を確認。
+- 未完: Snapshot iframe表示、選択・注釈連携、リンクナビゲーション、履歴、検索、E2E／実画面確認。
+- 次アクション: 同一オリジンかつscript無しのSnapshot surfaceを追加し、既存Anchor/Annotation/WebMCPを接続する。
+
+## 2026-09-03 — Research Browser Loop 2
+
+- 完了: `ImportedPageFrame`を追加し、HTML記事は元stylesheet・画像・構造を保ったSnapshotとして表示するようにした。iframeは`allow-same-origin`のみでscriptを許可せず、親から安全にSelectionを読み取る。
+- 完了: iframe内Selectionを既存のblockId/offset Anchorへ変換。元DOMを分割せずCustom HighlightでAnchorを表示し、Explain/Simplify/Verification/Imageの内容は対応段落直後へ静的カードとして表示する。LayersからのジャンプとWebMCPのvisible contextもSnapshot surfaceへ接続。
+- 完了: StickyなResearch Browser toolbarへURL欄、戻る、進む、原典表示、ページ内検索を追加。リンククリックはiframeを直接遷移させず`/api/import`へ再投入する。
+- 検証: production buildとESLint成功。Snapshot経路のE2Eでiframe内選択、Anchor、Verification表示、ページ内検索を確認。
+- 未完: ページ別状態復元の永続化、実サイトでの見た目とリンク巡回、全回帰。
+- 次アクション: 最大6ページのBrowsing Sessionを永続化し、実ネットワークと全テストで検証する。
+
+## 2026-09-03 — Research Browser Loop 3
+
+- 完了: 最大6ページのBrowsing SessionをlocalStorageへ保存。リンク先へ移動しても各ページのResearchDocument、Request Queue、Undo/Redoを保持し、Back/Forwardで復元する。容量超過時は現在ページだけへ安全に縮退する。
+- 完了: URL欄はscheme無しdomainをHTTPSとして開き、それ以外の検索語は文書スコープのWeb検索RequestとしてQueueへ登録する。ページ内検索はSnapshotを即時ハイライトし件数を表示。Web検索はページがAgent起動を偽装せず、`Process my marks.`のWebMCP handoff境界を明示する。
+- 安全性: CSPを必ず`html/head/body`を持つ文書のhead内へ配置し、no-referrer policyを追加。実画面で発見したhead外meta問題とResizeObserver loopを修正した。
+- 検証: unit 44/44、E2E 14/14、ESLint、TypeScript/Sites production build、`git diff --check`成功。実ネットワークでWikipedia Web browserを元スタイル・画像付き表示し、記事内Application linkを辿ってBack/Forward、ページ内検索1件、CSP適用後console error 0を確認した。Playwright CLIがsandbox iframeへ注入しようとするscriptは意図どおりブラウザに拒否された。
+- 未完: ログイン必須、JS描画、Paywall、400,000文字超のSnapshotは元ページどおりには表示できず、従来の構造化readerへフォールバックする。外部Web検索結果の取得はAgent側で行う。
+- 次アクション: Sitesへ公開する場合は、現行の未コミット変更全体をレビューし、公開環境でWebMCP Agentによる検索Request→Source追加までライブ確認する。
+
 ## 2026-09-01 — Loop 1
 
 - 完了: 空リポジトリとブランチ状態を確認。Anchor型MVPの受け入れ条件、React/Vite構成、Research data model、履歴モデルを確定。
@@ -113,3 +139,15 @@ Original prompt: 添付の開発指示書を起点に、Canvasではなく閲覧
 - 検証: unit 35/35、Playwright E2E 11/11、ESLint、TypeScript成功。新規E2Eはresearch node 2件を作った状態でDiagram / Timeline / Compareが空のまま（バッジ0）であること、Agentがtimelineを送ると2件描画されバッジが2になることを確認した。console error 0。
 - 未完: Staged Agent Changes、Profile UI、Chart / Pros-Cons / Visual Summary、公開環境でのWebMCPライブ呼び出し。
 - 次アクション: Sitesへ再デプロイし、公開URL上でResearch実行後にTimeline / Compareが空のままであることを実機確認する。
+
+## 2026-09-02 — Living Page Loop 10
+
+- 問題: 操作の入口が3階層で計17個あった。選択メニュー8個（7px）、パネルタブ3個、Canvas切替6個（8px）。文字が読めない大きさまで縮んでいたのに、データモデルの`canvasView`は1つだけで、切り替えると前の表示は消えていた。内部はすでに「キャンバスは一つ」で、UIだけが6種類を並べていた。
+- 完了（Phase 1）: Canvas切替行を廃止し、エージェントが最後に送ったものをそのまま出す1枚のCanvasにした。Queueタブを廃止してLayersへ畳み、保留中の依頼はAnchor行の「◯◯ · waiting」バッジ＋展開時の依頼カード（個別削除つき）として出す。記事全体への依頼はLayers最上段の固定行、ハンドオフ文のコピーはAsk Barのpending件数Pillへ移した。選択メニューはExplain / Simplify / Visualize / Research / Verifyの5個（9px）にし、Visualize / Compare / Map / InteractをVisualize 1個へ統合した。
+- 完了（Phase 2）: `image_board` Canvas Typeを廃止し、画像を本文横のInline Layer（`LivingAnnotationType: "images"`）へ移した。新ツール`insert_image_layer`はサムネイル並び、クリック拡大、Source link、LayersのImagesバッジを持つ。サンドボックスは外部画像を読めないため、画像はホストが描く場所にしか置けない。
+- 完了（Phase 3）: Diagram / Timeline / Compareを`interactive`へ吸収した。`CanvasType`は`"map" | "interactive"`の2つだけになり、`diagram-canvas.tsx`、`diagram-layout.ts`、dagre依存、関連型を削除した。橋渡しとして`livingPage.openCard(nodeId)`を追加し、ウィジェット内の要素からResearch Cardを開けるようにした。存在しないnodeIdはフレームが信頼できないため拒否してエラー表示する。項目単位の削除・UndoはWidget全体のRemove / Undoに置き換えた。
+- 完了: Compareの中身のガードレールを依頼プロンプトと`create_visualization`の説明へ書いた。「比較軸を明示し、全行を同じ軸で測り、差が出る行を先に置き、並べ替えや差分強調を組み込む」。
+- 移行: 旧6種のCanvas Typeで保存された文書は`withoutLegacyCanvasTypes`が`map`/`interactive`へ寄せ、描画できないデータを落とす。旧intent（compare / map / interact）は`visualize`へ正規化する。
+- 検証: unit 43/43、Playwright E2E 13/13、ESLint、TypeScript、production build成功。実ブラウザで選択メニュー5個・2タブ・Canvas空状態・Inline画像レイヤーと拡大Previewを確認し、console error 0。
+- 未完: Staged Agent Changes、Profile UI、公開環境でのWebMCPライブ呼び出し。
+- 次アクション: Sitesへ再デプロイし、WebMCP対応ブラウザで`insert_image_layer`と`livingPage.openCard`をライブ実行して往復を確認する。

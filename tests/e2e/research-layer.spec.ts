@@ -47,8 +47,10 @@ test("an agent reads an anchor and grows missing research branches", async ({ pa
     document.dispatchEvent(new Event("selectionchange"));
   });
   await page.getByRole("button", { name: "Grow research here" }).click();
-  await expect(page.getByRole("tab", { name: /Queue/ })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByText("Process my marks.", { exact: true })).toBeVisible();
+  // The mark waits on the passage it was made on: Layers is the only list there is.
+  await expect(page.getByRole("tab", { name: /Layers/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".layer-badge.waiting")).toHaveText("Research · waiting");
+  await expect(page.getByRole("button", { name: /1 queued/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Clear the current request" })).toBeVisible();
   const copiedOnMark = await page.evaluate(() => (window as unknown as { __copiedAgentRequest: string }).__copiedAgentRequest);
   expect(copiedOnMark).toBe("");
@@ -350,6 +352,112 @@ test("imports a public article and exposes its context to WebMCP", async ({ page
   await expect(page.locator("[data-anchor-id]")).toHaveCount(1);
 });
 
+test("browses safe page snapshots and restores per-page research when going back", async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    // Playwright installs the WebMCP shim in every frame. A production snapshot intentionally
+    // refuses that injected script because imported pages never receive allow-scripts.
+    if (message.type() === "error" && !message.text().startsWith("Blocked script execution in 'about:srcdoc'")) consoleErrors.push(message.text());
+  });
+  await installWebMCPStub(page);
+  const snapshot = (title: string, first: string, second: string, link?: string) => `<!doctype html><html><head>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'">
+    <style>body{font-family:Georgia;padding:40px}p{font-size:18px;line-height:1.7}</style><title>${title}</title></head><body>
+    <main><h1>${title}</h1><p data-rg-block-id="imported-0">${first}</p>
+    <p data-rg-block-id="imported-1">${second}${link ? ` <a href="${link}">Continue to the field report</a>` : ""}</p></main></body></html>`;
+  const firstText = "Cities are redesigning curb space as delivery traffic, bus lanes, cycling networks, and public seating compete for a narrow strip of street.";
+  const secondText = "The result needs comparison with nearby streets and seasonal traffic before it can support a broader policy claim.";
+  const destination = "https://city.example/stories/field-report";
+
+  await page.route("**/api/import", async (route) => {
+    const request = JSON.parse(route.request().postData() ?? "{}") as { url?: string };
+    const isSecond = request.url === destination;
+    const title = isSecond ? "The field report" : "Cities rethink the curb";
+    const blocks = isSecond
+      ? [
+          { id: "imported-0", kind: "p", text: "Field observers counted delivery stops across twelve corridors and recorded how long each vehicle occupied the curb." },
+          { id: "imported-1", kind: "p", text: "Their notes distinguish scheduled loading from unplanned stops and explain several gaps in the headline average." },
+        ]
+      : [
+          { id: "imported-0", kind: "p", text: firstText },
+          { id: "imported-1", kind: "p", text: `${secondText} Continue to the field report`, links: [{ start: secondText.length + 1, end: secondText.length + 29, url: destination }] },
+        ];
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ article: {
+        id: isSecond ? "article_field_report" : "article_curb_snapshot",
+        title,
+        deck: "A safe static snapshot",
+        author: "Mina Ortega",
+        sourceUrl: isSecond ? destination : "https://city.example/stories/curb",
+        siteName: "City Systems Review",
+        importedAt: "2026-09-03T00:00:00Z",
+        snapshotHtml: snapshot(title, blocks[0].text, isSecond ? blocks[1].text : secondText, isSecond ? undefined : destination),
+        blocks,
+      } }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Import article", exact: true }).first().click();
+  await page.getByLabel("Public article URL").fill("https://city.example/stories/curb");
+  await page.getByRole("button", { name: "Import article", exact: true }).last().click();
+
+  const firstFrame = page.frameLocator('iframe[title="Static snapshot of Cities rethink the curb"]');
+  await expect(firstFrame.getByRole("heading", { name: "Cities rethink the curb" })).toBeVisible();
+  await firstFrame.locator('[data-rg-block-id="imported-0"]').evaluate((element) => {
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    range.setStart(element.firstChild!, 0);
+    range.setEnd(element.firstChild!, 42);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.getByRole("button", { name: "Verify selection" }).click();
+  await expect(firstFrame.locator(".rg-anchor-count")).toHaveText("1 layer");
+
+  const tools = () => page.evaluate(async () => {
+    const registered = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const selection = JSON.parse((await registered.get_current_selection.execute({})).content[0].text) as { associatedAnchorId: string };
+    await registered.add_verification.execute({
+      anchorId: selection.associatedAnchorId,
+      status: "supported",
+      summary: "The source data supports this description.",
+      sources: [{ title: "Field report", url: "https://city.example/report", sourceType: "primary" }],
+    });
+  });
+  await tools();
+  await expect(firstFrame.locator(".rg-inline-layer")).toContainText("The source data supports this description.");
+
+  await page.getByLabel("Find in page").fill("seasonal traffic");
+  await expect(page.locator(".browser-find span")).toHaveText("1");
+  expect(await firstFrame.locator("body").evaluate(() => (CSS.highlights.get("rg-search") as Highlight | undefined)?.size ?? 0)).toBe(1);
+
+  await firstFrame.getByRole("link", { name: "Continue to the field report" }).click();
+  const secondFrame = page.frameLocator('iframe[title="Static snapshot of The field report"]');
+  await expect(secondFrame.getByRole("heading", { name: "The field report" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Back" })).toBeEnabled();
+  await page.getByRole("button", { name: "Back" }).click();
+
+  const restored = page.frameLocator('iframe[title="Static snapshot of Cities rethink the curb"]');
+  await expect(restored.getByRole("heading", { name: "Cities rethink the curb" })).toBeVisible();
+  await expect(restored.locator(".rg-anchor-count")).toHaveText("1 layer");
+  await expect(restored.locator(".rg-inline-layer")).toContainText("The source data supports this description.");
+
+  await page.getByLabel("Page address or web search").fill("curb allocation evidence");
+  await page.getByLabel("Page address or web search").press("Enter");
+  await expect(page.getByRole("status")).toContainText("Web search added to your marks");
+  const queuedSearch = await page.evaluate(async () => {
+    const registered = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const result = await registered.get_pending_requests.execute({});
+    return JSON.parse(result.content[0].text) as { requests: Array<{ prompt: string }> };
+  });
+  expect(queuedSearch.requests.some((request) => request.prompt.includes("curb allocation evidence"))).toBe(true);
+  expect(consoleErrors).toEqual([]);
+});
+
 test("an imported PDF carries no markup but keeps every layer the page offers", async ({ page }) => {
   const consoleErrors: string[] = [];
   page.on("console", (message) => {
@@ -449,7 +557,24 @@ test("an agent transforms a selection into a sourced Living Page and visual canv
   });
   await page.getByRole("button", { name: "Explain selection" }).click();
 
-  const liveResult = await page.evaluate(async () => {
+  const readingHtml = `
+<h1>How to read the growth claim</h1>
+<label for="scope">Which reading?</label>
+<select id="scope">
+  <option value="registrations">New registrations worldwide</option>
+  <option value="fleet">Share of cars on the road</option>
+</select>
+<p id="readout">Transition is accelerating</p>
+<script>
+  var scope = document.getElementById('scope');
+  var readout = document.getElementById('readout');
+  scope.addEventListener('change', function () {
+    readout.textContent = scope.value === 'fleet' ? 'Transition is still early' : 'Transition is accelerating';
+    livingPage.setState({ reading: scope.value });
+  });
+</script>`;
+
+  const liveResult = await page.evaluate(async (html) => {
     const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
     const selectionResult = await tools.get_current_selection.execute({});
     const selection = JSON.parse(selectionResult.content[0].text) as { selectedText: string; associatedAnchorId: string };
@@ -478,76 +603,64 @@ test("an agent transforms a selection into a sourced Living Page and visual canv
       }],
     });
     await tools.create_visualization.execute({
-      type: "diagram",
+      type: "interactive",
       title: "How to read the growth claim",
       sourceNodeIds: [],
-      data: {
-        diagram: {
-          nodes: [
-            { id: "claim", label: "20% growth claim", description: "The statement being tested" },
-            { id: "scope", label: "Define scope", description: "Period, geography, and vehicle type" },
-            { id: "evidence", label: "Check source", description: "Compare with the primary dataset" },
-          ],
-          edges: [{ from: "claim", to: "scope", label: "needs scoping" }, { from: "scope", to: "evidence" }],
-        },
-      },
+      data: { interactive: { id: "read-the-claim", title: "How to read the growth claim", note: "Pick a reading and see what it commits you to.", html } },
       config: {},
     });
     const contextResult = await tools.get_visible_page_context.execute({});
     const context = JSON.parse(contextResult.content[0].text) as { canvasType: string; activeExplanations: unknown[] };
     return { selection, context };
-  });
+  }, readingHtml);
 
   expect(liveResult.selection.selectedText).toContain("Global EV sales increased");
-  expect(liveResult.context.canvasType).toBe("diagram");
+  expect(liveResult.context.canvasType).toBe("interactive");
   expect(liveResult.context.activeExplanations).toHaveLength(4);
   await expect(page.getByText("Why this number needs context")).toBeVisible();
   await expect(page.getByText("EV sales were about one fifth higher")).toBeVisible();
   await expect(page.getByText("mixed", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "IEA" })).toBeVisible();
   await expect(page.locator(".research-mark.highlight-claim")).toHaveCount(1);
-  await expect(page.locator('[data-canvas-type="diagram"]')).toBeVisible();
-  await expect(page.getByText("20% growth claim")).toBeVisible();
-  await expect(page.locator(".diagram-edge")).toHaveCount(2);
-  await expect(page.locator(".diagram-edge-label")).toHaveText(["needs scoping"]);
-  await expect(page.locator('[data-diagram-direction="vertical"]')).toBeVisible();
 
-  // The reader opens a card; the agent can read which one without being told its name.
-  await page.locator('[data-diagram-node-id="scope"] button').first().click();
+  // There is no view switcher any more: what the agent last sent is what the canvas shows.
+  await expect(page.locator(".canvas-view-switcher")).toHaveCount(0);
+  await expect(page.locator('[data-canvas-type="interactive"]')).toBeVisible();
+  const widget = page.frameLocator('[data-canvas-type="interactive"] iframe.interactive-frame');
+  await expect(widget.locator("#readout")).toHaveText("Transition is accelerating");
+
+  // The reader works the widget; the agent can read what they did without being told.
+  await widget.locator("#scope").selectOption("fleet");
+  await expect(widget.locator("#readout")).toHaveText("Transition is still early");
   const focus = await page.evaluate(async () => {
     const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
     const canvasResult = await tools.get_canvas_state.execute({});
     const visibleResult = await tools.get_visible_page_context.execute({});
     return {
-      canvas: JSON.parse(canvasResult.content[0].text) as { readerFocus: { canvasType: string; itemId: string; label: string } | null },
+      canvas: JSON.parse(canvasResult.content[0].text) as {
+        readerFocus: { canvasType: string; itemId: string; label: string } | null;
+        interactiveState: { value: { reading: string } } | null;
+      },
       visible: JSON.parse(visibleResult.content[0].text) as { readerFocus: { itemId: string } | null },
     };
   });
-  expect(focus.canvas.readerFocus).toMatchObject({ canvasType: "diagram", itemId: "scope", label: "Define scope" });
-  expect(focus.visible.readerFocus?.itemId).toBe("scope");
-
+  expect(focus.canvas.readerFocus).toMatchObject({ canvasType: "interactive", itemId: "read-the-claim", label: "How to read the growth claim" });
+  expect(focus.canvas.interactiveState?.value.reading).toBe("fleet");
+  expect(focus.visible.readerFocus?.itemId).toBe("read-the-claim");
 
   await page.getByRole("button", { name: "Undo" }).click();
-  await expect(page.locator('[data-canvas-type="diagram"]')).toHaveCount(0);
+  await expect(page.locator('[data-canvas-type="interactive"]')).toHaveCount(0);
   await page.getByRole("button", { name: "Redo" }).click();
-  await expect(page.locator('[data-canvas-type="diagram"]')).toBeVisible();
+  await expect(page.locator('[data-canvas-type="interactive"]')).toBeVisible();
   await page.reload();
   await expect(page.locator(".article-body").getByText("Why this number needs context")).toBeVisible();
   await expect(page.locator(".anchor-inline-list").getByText("Why this number needs context")).toBeVisible();
   await page.getByRole("tab", { name: "Canvas", exact: false }).click();
-  await expect(page.locator('[data-canvas-type="diagram"]')).toBeVisible();
-
-  // The agent can flip the reading direction without resending the graph.
-  await page.evaluate(async () => {
-    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
-    await tools.update_visualization.execute({ layout: "horizontal" });
-  });
-  await expect(page.locator('[data-diagram-direction="horizontal"]')).toBeVisible();
-  await expect(page.locator(".diagram-edge")).toHaveCount(2);
+  await expect(page.locator('[data-canvas-type="interactive"]')).toBeVisible();
   expect(consoleErrors).toEqual([]);
 });
 
-test("image boards auto-open and mistaken anchors or canvas cards can be removed", async ({ page }) => {
+test("pictures land beside the text, and mistaken anchors or layers can be removed", async ({ page }) => {
   const consoleErrors: string[] = [];
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
@@ -588,32 +701,43 @@ test("image boards auto-open and mistaken anchors or canvas cards can be removed
   await page.getByRole("button", { name: "Close research panel" }).click();
   await expect(page.getByRole("complementary", { name: "Living Page layers" })).toHaveCount(0);
 
-  await page.evaluate(async () => {
+  // Pictures are not a canvas view: the sandbox cannot load an external image, and the reader
+  // wants to look at them while reading. They go where the explanation went.
+  const imaged = await page.evaluate(async () => {
     const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
-    await tools.create_visualization.execute({
-      type: "image_board",
+    const selectionResult = await tools.get_current_selection.execute({});
+    const { associatedAnchorId: anchorId } = JSON.parse(selectionResult.content[0].text) as { associatedAnchorId: string };
+    const result = await tools.insert_image_layer.execute({
+      anchorId,
       title: "Comparable product screens",
-      sourceNodeIds: [],
-      data: { imageBoard: [
-        { id: "screen-a", title: "Product A", imageUrl: "https://images.example/a.svg", note: "Primary screen", sourceUrl: "https://example.com/a", sourceLabel: "Product A source" },
-        { id: "screen-b", title: "Product B", imageUrl: "https://images.example/b.svg", note: "Alternative screen", sourceUrl: "https://example.com/b", sourceLabel: "Product B source" },
-      ] },
-      config: {},
+      note: "Two screens the passage is really about.",
+      images: [
+        { title: "Product A", imageUrl: "https://images.example/a.svg", note: "Primary screen", sourceUrl: "https://example.com/a", sourceLabel: "Product A source" },
+        { title: "Product B", imageUrl: "https://images.example/b.svg", note: "Alternative screen", sourceUrl: "https://example.com/b", sourceLabel: "Product B source" },
+      ],
     });
+    let onTheCanvas = "accepted";
+    try {
+      await tools.create_visualization.execute({ type: "image_board", title: "Screens", data: {} });
+    } catch (error) {
+      onTheCanvas = (error as Error).message;
+    }
+    return { ...(JSON.parse(result.content[0].text) as { imageCount: number }), onTheCanvas };
   });
+  expect(imaged.imageCount).toBe(2);
+  expect(imaged.onTheCanvas).toMatch(/one Map or one Interactive widget/);
 
-  await expect(page.getByRole("complementary", { name: "Visual Thinking Canvas" })).toBeVisible();
-  await expect(page.locator('[data-canvas-type="image_board"] .image-card')).toHaveCount(2);
-  await expect(page.locator(".image-card img").first()).toBeVisible();
-  expect(await page.locator(".image-card img").first().evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  const strip = page.locator(".article-body .inline-image-strip");
+  await expect(strip.locator(".inline-image")).toHaveCount(2);
+  await expect(strip.locator("img").first()).toBeVisible();
+  expect(await strip.locator("img").first().evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
   await page.getByRole("button", { name: "Open image Product A" }).click();
   await expect(page.locator(".image-preview-backdrop")).toBeVisible();
   await page.getByRole("button", { name: "Close image preview" }).click();
 
-  await page.getByRole("button", { name: "Remove visualization card Product A" }).click();
-  await expect(page.locator('[data-canvas-type="image_board"] .image-card')).toHaveCount(1);
-  await page.getByRole("button", { name: "Undo" }).click();
-  await expect(page.locator('[data-canvas-type="image_board"] .image-card')).toHaveCount(2);
+  // Applying a layer reopens Layers, which lists the strip the same way it lists an explanation.
+  await expect(page.getByRole("complementary", { name: "Living Page layers" })).toBeVisible();
+  await expect(page.locator(".layer-badge.images")).toHaveText("Images");
 
   await page.locator('[data-block-id="claim-growth"]').scrollIntoViewIfNeeded();
   await page.getByRole("button", { name: "Remove anchor from article" }).click();
@@ -712,7 +836,7 @@ test("an agent maps places from research and moves the reader's viewport", async
   expect(consoleErrors).toEqual([]);
 });
 
-test("marks pile up in an in-page queue that the agent reads and clears", async ({ page }) => {
+test("marks wait on their own passages until the agent reads and clears them", async ({ page }) => {
   const consoleErrors: string[] = [];
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
@@ -741,11 +865,25 @@ test("marks pile up in an in-page queue that the agent reads and clears", async 
   await markPassage("questions-heading", "Verify selection", 8);
   await markPassage("regional-gap", "Grow research here", 24);
 
-  await expect(page.getByRole("tab", { name: /Queue/ })).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator(".queue-card")).toHaveCount(3);
-  await expect(page.getByRole("button", { name: /3 queued/ })).toBeVisible();
+  // No separate Queue tab: each mark is a waiting badge on the anchor it was made on.
+  await expect(page.getByRole("tab", { name: /Queue/ })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: /Layers/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".anchor-group")).toHaveCount(3);
+  await expect(page.locator(".layer-badge.waiting")).toHaveText([
+    "Explain · waiting",
+    "Verify · waiting",
+    "Research · waiting",
+  ]);
+  await expect(page.locator(".research-pane .layer-count")).toHaveText("3 anchored · 3 waiting");
   const nothingCopied = await page.evaluate(() => (window as unknown as { __copiedAgentRequest: string }).__copiedAgentRequest);
   expect(nothingCopied).toBe("");
+
+  // The handoff text hangs off the count in the ask bar, which is the only place it is needed.
+  await page.getByRole("button", { name: /3 queued/ }).click();
+  await expect(page.getByRole("button", { name: /Handoff copied/ })).toBeVisible();
+  const handoff = await page.evaluate(() => (window as unknown as { __copiedAgentRequest: string }).__copiedAgentRequest);
+  expect(handoff).toContain("get_pending_requests");
+  expect(handoff).toContain("insert_image_layer");
   await page.screenshot({ path: "output/playwright/request-queue.png", fullPage: false });
 
   // One sentence in chat later, the agent reads the whole queue through WebMCP.
@@ -761,7 +899,7 @@ test("marks pile up in an in-page queue that the agent reads and clears", async 
   expect(queue.requests.map((request) => request.intent)).toEqual(["explain", "verify", "research"]);
   expect(queue.requests[0].suggestedTools).toContain("insert_inline_explanation");
   expect(queue.requests[0].quote.length).toBeGreaterThan(0);
-  await expect(page.getByText("Your agent has read this queue.")).toBeVisible();
+  await expect(page.getByText("Your agent has read these marks.")).toBeVisible();
 
   // It applies each request against the anchor the reader marked, then clears it.
   const remaining = await page.evaluate(async (entries: Array<{ requestId: string; anchorId: string }>) => {
@@ -791,15 +929,14 @@ test("marks pile up in an in-page queue that the agent reads and clears", async 
   expect(remaining.pendingCount).toBe(0);
   await expect(page.getByText("What the 20% actually counts")).toBeVisible();
 
-  await page.getByRole("tab", { name: /Queue/ }).click();
-  await expect(page.locator(".queue-card")).toHaveCount(0);
+  await expect(page.locator(".layer-badge.waiting")).toHaveCount(0);
+  await expect(page.locator(".pending-request")).toHaveCount(0);
   await expect(page.locator(".queue-resolved-row")).toHaveCount(3);
   await expect(page.getByText("No reliable regional dataset for this market yet.")).toBeVisible();
   await expect(page.getByRole("button", { name: /queued/ })).toHaveCount(0);
 
-  // The queue survives a reload, and the reader can clear the resolved history.
+  // The resolved history survives a reload, and the reader can clear it.
   await page.reload();
-  await page.getByRole("tab", { name: /Queue/ }).click();
   await expect(page.locator(".queue-resolved-row")).toHaveCount(3);
   await page.getByRole("button", { name: "Clear", exact: true }).click();
   await expect(page.locator(".queue-resolved-row")).toHaveCount(0);
@@ -807,7 +944,7 @@ test("marks pile up in an in-page queue that the agent reads and clears", async 
   expect(consoleErrors).toEqual([]);
 });
 
-test("a Compare mark reaches the canvas without any research registered first", async ({ page }) => {
+test("a Visualize mark reaches the canvas without any research registered first", async ({ page }) => {
   const consoleErrors: string[] = [];
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
@@ -816,11 +953,11 @@ test("a Compare mark reaches the canvas without any research registered first", 
   await page.goto("/");
   await expect(page.getByText("WebMCP tools registered")).toBeVisible();
 
-  // The empty Compare canvas must not tell the reader to grow research first.
+  // The empty canvas must not tell the reader to grow research first, and it offers no view to pick.
   await page.getByRole("tab", { name: /Canvas/ }).click();
-  await page.getByRole("button", { name: "Compare" }).click();
-  await expect(page.getByText("No comparison yet")).toBeVisible();
-  await expect(page.getByText(/does not need existing research/)).toBeVisible();
+  await expect(page.locator(".canvas-view-switcher")).toHaveCount(0);
+  await expect(page.getByText("No canvas yet")).toBeVisible();
+  await expect(page.getByText(/It draws a diagram, a chronology, a comparison/)).toBeVisible();
 
   await page.locator('[data-block-id="claim-growth"]').evaluate((element) => {
     const selection = window.getSelection()!;
@@ -832,43 +969,47 @@ test("a Compare mark reaches the canvas without any research registered first", 
     selection.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
   });
-  await page.getByRole("button", { name: "Compare selection" }).click();
+  await page.getByRole("button", { name: "Visualize selection" }).click();
 
   const queue = await page.evaluate(async () => {
     const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
     const result = await tools.get_pending_requests.execute({});
     return JSON.parse(result.content[0].text) as {
-      requests: Array<{ requestId: string; intent: string; suggestedTools: string[] }>;
+      requests: Array<{ requestId: string; intent: string; prompt: string; suggestedTools: string[] }>;
     };
   });
-  expect(queue.requests.map((request) => request.intent)).toEqual(["compare"]);
+  expect(queue.requests.map((request) => request.intent)).toEqual(["visualize"]);
   expect(queue.requests[0].suggestedTools).toContain("create_visualization");
+  // One intent now covers every visual shape, so the prompt is what tells the agent to choose.
+  expect(queue.requests[0].prompt).toMatch(/name the comparison axis/);
 
   // The agent answers it straight from the article: no research node exists yet.
-  const state = await page.evaluate(async () => {
+  const comparisonHtml = `
+<h1>Two readings of the 20%</h1>
+<p>Comparison axis: what the percentage is measured against.</p>
+<table>
+  <tr><th>Reading</th><th>What it counts</th><th>Where it leads</th></tr>
+  <tr><td>Optimistic</td><td>New registrations worldwide</td><td>Transition is accelerating</td></tr>
+  <tr><td>Cautious</td><td>Share of cars on the road</td><td>Transition is still early</td></tr>
+</table>`;
+
+  const state = await page.evaluate(async (html) => {
     const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
     await tools.create_visualization.execute({
-      type: "comparison_table",
+      type: "interactive",
       title: "Two readings of the 20%",
-      data: {
-        comparison: {
-          columns: ["Reading", "What it counts", "Where it leads"],
-          rows: [
-            { label: "Optimistic", values: ["New registrations worldwide", "Transition is accelerating"] },
-            { label: "Cautious", values: ["Share of cars on the road", "Transition is still early"] },
-          ],
-        },
-      },
+      data: { interactive: { id: "two-readings", title: "Two readings of the 20%", html } },
     });
     const research = window.researchGarden!.getState();
     return { nodes: research.document.nodes.length, canvasType: research.document.canvasView.type };
-  });
+  }, comparisonHtml);
   expect(state.nodes).toBe(0);
-  expect(state.canvasType).toBe("comparison_table");
+  expect(state.canvasType).toBe("interactive");
 
-  await expect(page.locator(".comparison-view")).toBeVisible();
-  await expect(page.getByText("Transition is accelerating")).toBeVisible();
-  await expect(page.getByRole("tab", { name: /Canvas/ }).locator("span")).toHaveText("2");
+  await expect(page.locator('[data-canvas-type="interactive"]')).toBeVisible();
+  const comparison = page.frameLocator('[data-canvas-type="interactive"] iframe.interactive-frame');
+  await expect(comparison.getByText("Transition is accelerating")).toBeVisible();
+  await expect(page.getByRole("tab", { name: /Canvas/ }).locator("span")).toHaveText("1");
 
   expect(consoleErrors).toEqual([]);
 });
@@ -887,8 +1028,9 @@ test("a whole-article ask lets the agent anchor the passages it answers about", 
     .fill("Verify the strongest statistic in this article and say how solid it is.");
   await page.getByRole("button", { name: "Add to queue" }).click();
 
-  await expect(page.getByRole("tab", { name: /Queue/ })).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator(".queue-card")).toHaveCount(1);
+  // A whole-article ask has no anchor to sit under, so it gets the pinned row at the top of Layers.
+  await expect(page.getByRole("tab", { name: /Layers/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".anchor-group.document-scope .pending-request")).toHaveCount(1);
   await expect(page.getByText(/Whole article · your agent anchors what it answers/)).toBeVisible();
   await expect(page.locator(".research-mark")).toHaveCount(0);
 
@@ -984,15 +1126,14 @@ test("a whole-article ask lets the agent anchor the passages it answers about", 
 
   // The reader sees the passage marked in the article, attributed to the agent.
   await expect(page.locator('.research-mark[data-anchor-id]')).toHaveCount(1);
-  await expect(page.getByText("The direction is well supported")).toBeVisible();
+  await expect(page.locator(".article-body").getByText("The direction is well supported")).toBeVisible();
   await page.getByRole("tab", { name: /Layers/ }).click();
   await expect(page.locator(".layer-badge.agent-anchored")).toHaveText("Agent anchored");
   await expect(page.locator(".layer-badge.verified")).toHaveText("Verified");
   await page.screenshot({ path: "output/playwright/agent-anchored-passage.png", fullPage: false });
 
   // It is an ordinary anchor: undo takes the whole operation back.
-  await page.getByRole("tab", { name: /Queue/ }).click();
-  await expect(page.locator(".queue-card")).toHaveCount(0);
+  await expect(page.locator(".anchor-group.document-scope")).toHaveCount(0);
   await expect(page.locator(".queue-resolved-row")).toHaveCount(1);
 
   await page.reload();
@@ -1012,6 +1153,29 @@ test("an agent answers with a widget the reader can operate inside a sandbox", a
   await installWebMCPStub(page);
   await page.goto("/");
   await expect(page.getByText("WebMCP tools registered")).toBeVisible();
+
+  // The reader asks for it from the passage itself, without describing the widget in a chat.
+  await page.locator('[data-block-id="claim-growth"]').evaluate((element) => {
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    const text = element.firstChild!;
+    range.setStart(text, 0);
+    range.setEnd(text, 40);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.getByRole("button", { name: "Visualize selection" }).click();
+
+  const queue = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    return JSON.parse((await tools.get_pending_requests.execute({})).content[0].text) as {
+      requests: Array<{ intent: string; prompt: string; suggestedTools: string[] }>;
+    };
+  });
+  expect(queue.requests.map((request) => request.intent)).toEqual(["visualize"]);
+  expect(queue.requests[0].suggestedTools).toContain("create_visualization");
+  expect(queue.requests[0].prompt).toMatch(/a small app I can operate/);
 
   const widgetHtml = `
 <h1>Break-even year</h1>
@@ -1107,7 +1271,7 @@ test("an agent answers with a widget the reader can operate inside a sandbox", a
   expect(consoleErrors).toEqual([]);
 });
 
-test("research nodes alone never fill the visual canvases", async ({ page }) => {
+test("research nodes alone never fill the canvas, and a widget can still open one", async ({ page }) => {
   const consoleErrors: string[] = [];
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
@@ -1146,39 +1310,62 @@ test("research nodes alone never fill the visual canvases", async ({ page }) => 
   });
   expect(grown.count).toBe(2);
 
-  // Research belongs to Layers. Visual canvases stay empty until the agent explicitly creates one.
+  // Research belongs to Layers. The canvas stays empty until the agent explicitly builds something.
   await page.getByRole("tab", { name: /Canvas/ }).click();
-  await page.getByRole("button", { name: "Timeline" }).click();
-  await expect(page.getByText("No timeline yet")).toBeVisible();
-  await expect(page.locator(".timeline-item")).toHaveCount(0);
+  await expect(page.getByText("No canvas yet")).toBeVisible();
+  await expect(page.locator(".interactive-frame")).toHaveCount(0);
   await expect(page.getByRole("tab", { name: /Canvas/ }).locator("span")).toHaveText("0");
 
-  await page.getByRole("button", { name: "Compare" }).click();
-  await expect(page.getByText("No comparison yet")).toBeVisible();
-  await expect(page.locator(".comparison-cell")).toHaveCount(0);
+  // A chronology is now a widget the agent writes, and it can still reach the sourced card
+  // behind an element — that is what openCard replaces the old card click with.
+  const nodeIds = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    const layer = JSON.parse((await tools.get_research_layer.execute({})).content[0].text) as { nodes: Array<{ id: string; title: string }> };
+    return layer.nodes.map((node) => node.id);
+  });
 
-  // A diagram is also an explicit visual artifact, not a second rendering of the research layer.
-  await page.getByRole("button", { name: "Diagram" }).click();
-  await expect(page.getByText("No diagram yet")).toBeVisible();
-  await expect(page.locator('[data-canvas-type="diagram"]')).toHaveCount(0);
+  const timelineHtml = `
+<h1>How the 20% was reached</h1>
+<ol>
+  <li><strong>2023</strong> Incentives peak
+    <button id="open-source" data-node="NODE_ID">Open the sourced card</button>
+  </li>
+  <li><strong>2026</strong> Share hits 20%
+    <button id="open-missing" data-node="node_not_here">Open a card that is gone</button>
+  </li>
+</ol>
+<script>
+  function wire(id) {
+    document.getElementById(id).addEventListener('click', function (event) {
+      livingPage.openCard(event.currentTarget.getAttribute('data-node'));
+    });
+  }
+  wire('open-source');
+  wire('open-missing');
+</script>`.replace("NODE_ID", nodeIds[0]);
 
-  // Once the agent builds a real timeline, it renders.
-  await page.evaluate(async () => {
+  await page.evaluate(async (html) => {
     const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
     await tools.create_visualization.execute({
-      type: "timeline",
+      type: "interactive",
       title: "How the 20% was reached",
-      data: {
-        timeline: [
-          { id: "t1", date: "2023", title: "Incentives peak", description: "Purchase subsidies reach their widest coverage." },
-          { id: "t2", date: "2026", title: "Share hits 20%", description: "New registrations cross the threshold." },
-        ],
-      },
+      data: { interactive: { id: "chronology", title: "How the 20% was reached", html } },
     });
-  });
-  await expect(page.locator(".timeline-item")).toHaveCount(2);
-  await expect(page.getByText("Incentives peak")).toBeVisible();
-  await expect(page.getByRole("tab", { name: /Canvas/ }).locator("span")).toHaveText("2");
+  }, timelineHtml);
+
+  const chronology = page.frameLocator('[data-canvas-type="interactive"] iframe.interactive-frame');
+  await expect(chronology.getByText("Incentives peak")).toBeVisible();
+  await expect(page.getByRole("tab", { name: /Canvas/ }).locator("span")).toHaveText("1");
+
+  await chronology.locator("#open-source").click();
+  await expect(page.getByText("Source provenance")).toBeVisible();
+  await expect(page.locator(".detail-panel").getByText("Verify the 20% growth claim")).toBeVisible();
+  await page.locator(".detail-close").click();
+
+  // The frame is untrusted, so a card id the page does not hold opens nothing and says so.
+  await chronology.locator("#open-missing").click();
+  await expect(page.locator(".detail-panel")).toHaveCount(0);
+  await expect(page.locator(".interactive-error")).toContainText("node_not_here");
 
   expect(consoleErrors).toEqual([]);
 });

@@ -35,6 +35,26 @@ describe("article import", () => {
     expect(new Set(article.blocks.map((block) => block.id)).size).toBe(article.blocks.length);
     expect(article.blocks.some((block) => block.kind === "h2")).toBe(true);
     expect(article.blocks.map((block) => block.text).join(" ")).not.toContain("window.evil");
+    expect(article.snapshotHtml).toContain('data-rg-block-id="imported-0"');
+    expect(article.snapshotHtml).toContain('class="rg-document-title">Imported research article</h1>');
+    expect(article.snapshotHtml).toContain("script-src 'none'");
+    expect(article.snapshotHtml).toMatch(/^<!doctype html><html[^>]*><head><meta/i);
+    expect(article.snapshotHtml).not.toContain("window.evil");
+  });
+
+  it("keeps safe presentation hooks but removes active imported content", async () => {
+    const styled = `<!doctype html><html><head><title>Styled story</title>
+      <link rel="stylesheet" href="/news.css"><style>.story { color: navy }</style></head>
+      <body class="publication"><article class="story"><p onclick="alert(1)">A sufficiently long opening paragraph keeps its publication class while unsafe event handlers and active content are removed from the snapshot.</p>
+      <p>A second sufficiently detailed paragraph lets Readability retain the article and gives the snapshot another stable research block.</p>
+      <form action="/steal"><input name="secret"></form><iframe src="https://evil.example"></iframe></article></body></html>`;
+    const article = await extractArticle(styled, new URL("https://journal.example/story"));
+
+    expect(article.snapshotHtml).toContain("https://journal.example/news.css");
+    expect(article.snapshotHtml).toContain('class="story"');
+    expect(article.snapshotHtml).not.toContain("onclick");
+    expect(article.snapshotHtml).not.toContain("<form");
+    expect(article.snapshotHtml).not.toContain("<iframe");
   });
 
   it("replaces a single flattened block with uniquely identified fallback paragraphs", async () => {

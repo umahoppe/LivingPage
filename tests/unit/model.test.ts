@@ -117,19 +117,20 @@ describe("research graph model", () => {
       level: "beginner",
     }, "agent");
     const visualized = setCanvasView(explained, {
-      type: "diagram",
+      type: "interactive",
       title: "How the claim is checked",
       data: {
-        diagram: {
-          nodes: [{ id: "claim", label: "Claim" }, { id: "source", label: "Primary source" }],
-          edges: [{ from: "claim", to: "source", label: "checked against" }],
+        interactive: {
+          id: "check",
+          title: "How the claim is checked",
+          html: "<p>Claim → primary source</p>",
         },
       },
     }, "agent");
 
     expect(visualized.document.annotations[0].type).toBe("explanation");
-    expect(visualized.document.canvasView.type).toBe("diagram");
-    expect(undo(visualized).document.canvasView.type).toBe("diagram");
+    expect(visualized.document.canvasView.data.interactive?.title).toBe("How the claim is checked");
+    expect(undo(visualized).document.canvasView.data.interactive).toBeUndefined();
     expect(undo(undo(visualized)).document.annotations).toHaveLength(0);
   });
 
@@ -182,7 +183,7 @@ describe("research graph model", () => {
     expect(removedCompleted.document.annotations).toHaveLength(1);
   });
 
-  it("cascades child research-card deletion and removes image cards reversibly", () => {
+  it("cascades child research-card deletion and removes an interactive widget whole", () => {
     const anchored = stateWithAnchor();
     const researched = addNodes(anchored.state, anchored.anchor.id, [
       { clientId: "parent", type: "background", title: "Parent", summary: "Parent" },
@@ -192,16 +193,89 @@ describe("research graph model", () => {
     expect(withoutParent.document.nodes).toHaveLength(0);
 
     const visualized = setCanvasView(withoutParent, {
-      type: "image_board",
-      title: "Screenshots",
-      data: { imageBoard: [
-        { id: "screen-a", title: "A", imageUrl: "https://images.example/a.png", sourceUrl: "https://example.com/a" },
-        { id: "screen-b", title: "B", imageUrl: "https://images.example/b.png" },
-      ] },
+      type: "interactive",
+      title: "Scenario switcher",
+      data: { interactive: { id: "widget", title: "Scenario switcher", html: "<p>widget</p>" } },
     }, "agent");
-    const removedImage = removeCanvasItem(visualized, "screen-a");
-    expect(removedImage.document.canvasView.data.imageBoard).toHaveLength(1);
-    expect(undo(removedImage).document.canvasView.data.imageBoard).toHaveLength(2);
+    const removedWidget = removeCanvasItem(visualized, "widget");
+    expect(removedWidget.document.canvasView.data.interactive).toBeUndefined();
+    expect(undo(removedWidget).document.canvasView.data.interactive?.id).toBe("widget");
+  });
+
+  it("stores pictures beside the passage instead of on the canvas", () => {
+    const anchored = stateWithAnchor();
+    const withImages = addAnnotation(anchored.state, {
+      anchorId: anchored.anchor.id,
+      type: "images",
+      title: "What the port looks like",
+      images: [
+        { title: "Container yard", imageUrl: "https://images.example/a.png", sourceUrl: "https://example.com/a" },
+        { title: "Crane row", imageUrl: "https://images.example/b.png" },
+      ],
+    }, "agent");
+
+    const layer = withImages.document.annotations[0];
+    expect(layer.type).toBe("images");
+    expect(layer.images).toHaveLength(2);
+    expect(layer.images?.[0].id).toBeTruthy();
+    expect(undo(withImages).document.annotations).toHaveLength(0);
+
+    expect(() => addAnnotation(anchored.state, {
+      anchorId: anchored.anchor.id,
+      type: "images",
+      images: [{ title: "Bad", imageUrl: "javascript:alert(1)" }],
+    }, "agent")).toThrow();
+    expect(() => addAnnotation(anchored.state, {
+      anchorId: anchored.anchor.id,
+      type: "images",
+      images: [],
+    }, "agent")).toThrow(/at least one image/);
+  });
+
+  it("carries a document saved against the six-view canvas onto the one that replaced it", () => {
+    const legacy = emptyState();
+    // Shapes from the retired canvas types, exactly as an older build would have persisted them.
+    legacy.document.canvasView = {
+      ...legacy.document.canvasView,
+      type: "comparison_table",
+      title: "How the three routes compare",
+      data: { comparison: { columns: ["Route", "Cost"], rows: [{ label: "Rail", values: ["Rail", "Low"] }] } },
+    } as never;
+    legacy.requests = [
+      { id: "r1", anchorId: null, intent: "compare", prompt: "Compare the routes.", createdAt: "2026-01-01T00:00:00.000Z", status: "pending", appliedTo: [] },
+      { id: "r2", anchorId: null, intent: "interact", prompt: "Let me try it.", createdAt: "2026-01-01T00:00:00.000Z", status: "pending", appliedTo: [] },
+    ] as never;
+
+    const normalized = normalizeResearchState(legacy);
+    expect(normalized.document.canvasView.type).toBe("interactive");
+    expect(normalized.document.canvasView.data).toEqual({ map: undefined, interactive: undefined });
+    expect(normalized.requests.map((request) => request.intent)).toEqual(["visualize", "visualize"]);
+  });
+
+  it("keeps a saved map canvas as a map", () => {
+    const legacy = emptyState();
+    legacy.document.canvasView = {
+      ...legacy.document.canvasView,
+      type: "map",
+      title: "Where it happened",
+      data: {
+        map: { markers: [{ id: "kobe", label: "Kobe", lat: 34.69, lng: 135.195 }] },
+        imageBoard: [{ id: "old", title: "Old", imageUrl: "https://images.example/a.png" }],
+      },
+    } as never;
+
+    const normalized = normalizeResearchState(legacy);
+    expect(normalized.document.canvasView.type).toBe("map");
+    expect(normalized.document.canvasView.data.map?.markers).toHaveLength(1);
+    expect("imageBoard" in normalized.document.canvasView.data).toBe(false);
+  });
+
+  it("refuses a canvas type the page no longer draws", () => {
+    expect(() => setCanvasView(emptyState(), {
+      type: "diagram" as never,
+      title: "Diagram",
+      data: {},
+    }, "agent")).toThrow(/one Map or one Interactive widget/);
   });
 
   it("stores a validated map canvas and removes markers reversibly", () => {
@@ -347,7 +421,7 @@ describe("reader request queue", () => {
     const anchored = stateWithAnchor();
     const { state, request } = enqueueRequest(anchored.state, {
       anchorId: anchored.anchor.id,
-      intent: "map",
+      intent: "visualize",
       prompt: "Map the places named here.",
     });
     expect(state.requests).toHaveLength(1);

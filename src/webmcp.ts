@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { getCanvasFocus } from "./canvas-focus";
 import { getInteractiveState } from "./interactive-state";
 import { getMapViewport } from "./map-viewport";
-import { MAX_DERIVED_ANCHORS_PER_REQUEST, MAX_INTERACTIVE_HTML_CHARACTERS } from "./model";
+import { MAX_DERIVED_ANCHORS_PER_REQUEST, MAX_INTERACTIVE_FRAME_HEIGHT, MAX_INTERACTIVE_HTML_CHARACTERS } from "./model";
 import type {
   AnchorPassageInput,
+  AnnotationImageInput,
   AnnotationInput,
   CanvasType,
   CanvasViewState,
@@ -18,6 +19,7 @@ import type {
   VerificationStatus,
   VisualizationData,
 } from "./types";
+import { getArticleSurface } from "./article-surface";
 
 type WebMCPStatus = "checking" | "ready" | "unavailable" | "error";
 
@@ -82,15 +84,17 @@ function getPageContext() {
   const article = document.querySelector("[data-article]");
   const selection = window.getSelection();
   const state = window.researchGarden?.getState();
+  const liveSelection = window.researchGarden?.getSelection();
   return {
     pageTitle: document.title,
     pageUrl: location.href,
     articleId: state?.document.article.id,
     articleSourceUrl: state?.document.article.sourceUrl,
     articleSiteName: state?.document.article.siteName,
-    articleTitle: article?.querySelector("h1")?.textContent?.trim(),
-    articleContent: article?.textContent?.replace(/\s+/g, " ").trim().slice(0, 5000),
-    selectedText: selection && !selection.isCollapsed ? selection.toString().trim() : "",
+    articleTitle: getArticleSurface()?.getTitle() ?? state?.document.article.title ?? article?.querySelector("h1")?.textContent?.trim(),
+    articleContent: state?.document.article.blocks.map((block) => block.text).join(" ").slice(0, 5000)
+      ?? article?.textContent?.replace(/\s+/g, " ").trim().slice(0, 5000),
+    selectedText: liveSelection?.quote ?? (selection && !selection.isCollapsed ? selection.toString().trim() : ""),
     anchors: state?.document.anchors.map(({ id, blockId, quote, createdBy }) => ({ id, blockId, quote, createdBy })) ?? [],
     graphRevision: state?.document.revision ?? 0,
     canvasType: state?.document.canvasView.type,
@@ -117,15 +121,7 @@ function getVisiblePageContext() {
   const bridge = requireBridge();
   const state = bridge.getState();
   const articlePane = document.querySelector<HTMLElement>("[data-article]");
-  const visibleBlocks = [...document.querySelectorAll<HTMLElement>("[data-block-id]")]
-    .filter((element) => {
-      const rect = element.getBoundingClientRect();
-      return rect.bottom >= 64 && rect.top <= window.innerHeight;
-    })
-    .map((element) => element.textContent?.replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .join(" ")
-    .slice(0, 3200);
+  const visibleBlocks = getArticleSurface()?.getVisibleText() ?? "";
   return {
     currentSection: articlePane?.querySelector("h1")?.textContent?.trim() ?? state.document.article.title,
     visibleText: visibleBlocks,
@@ -145,22 +141,8 @@ function getVisiblePageContext() {
 /** Ids the reader can actually click on the current explicitly created canvas. */
 function canvasItemIds(state: ResearchState): Set<string> {
   const { type, data } = state.document.canvasView;
-  switch (type) {
-    case "diagram":
-      return new Set((data.diagram?.nodes ?? []).map((node) => node.id));
-    case "timeline":
-      return new Set((data.timeline ?? []).map((item) => item.id));
-    case "comparison_table":
-      return new Set((data.comparison?.rows ?? []).map((row, index) => row.id ?? `row-${index}`));
-    case "image_board":
-      return new Set((data.imageBoard ?? []).map((item) => item.id));
-    case "map":
-      return new Set((data.map?.markers ?? []).map((marker) => marker.id));
-    case "interactive":
-      return new Set(data.interactive ? [data.interactive.id] : []);
-    default:
-      return new Set();
-  }
+  if (type === "map") return new Set((data.map?.markers ?? []).map((marker) => marker.id));
+  return new Set(data.interactive ? [data.interactive.id] : []);
 }
 
 /**
@@ -203,9 +185,7 @@ function getCanvasState() {
 const intentToolHints: Record<RequestIntent, string[]> = {
   explain: ["insert_inline_explanation"],
   simplify: ["insert_simplified_layer"],
-  visualize: ["create_visualization", "update_visualization"],
-  compare: ["create_visualization", "update_visualization"],
-  map: ["create_visualization", "set_map_view"],
+  visualize: ["create_visualization", "update_visualization", "set_map_view", "insert_image_layer"],
   research: ["create_research_nodes", "add_research_source"],
   verify: ["add_verification", "add_research_source"],
   custom: ["insert_inline_explanation", "create_research_nodes", "create_visualization"],
@@ -592,6 +572,49 @@ export function useWebMCP(): WebMCPStatus {
         },
       },
       {
+        name: "insert_image_layer",
+        title: "Show pictures beside the text",
+        description: "Attach a strip of pictures directly beside an anchored passage, where the reader can look at them while reading. This is where images belong: the visual canvas runs in a sandbox with no network, so it cannot load an external image at all. Give every image an exact, directly linkable http(s) URL and a title that says what it shows; add sourceUrl so the reader can reach the page it came from.",
+        inputSchema: {
+          type: "object",
+          required: ["anchorId", "images"],
+          properties: {
+            anchorId: { type: "string" },
+            title: { type: "string", maxLength: 100, description: "Optional heading for the whole strip." },
+            note: { type: "string", maxLength: 600, description: "Optional one-paragraph note above the images." },
+            images: {
+              type: "array",
+              minItems: 1,
+              maxItems: 12,
+              items: {
+                type: "object",
+                required: ["title", "imageUrl"],
+                properties: {
+                  title: { type: "string", maxLength: 120 },
+                  imageUrl: { type: "string", description: "Direct http(s) URL to the image file itself, not the page around it." },
+                  note: { type: "string", maxLength: 240 },
+                  sourceUrl: { type: "string" },
+                  sourceLabel: { type: "string", maxLength: 60 },
+                },
+              },
+            },
+            relatedNodeIds: { type: "array", items: { type: "string" }, maxItems: 12 },
+          },
+          additionalProperties: false,
+        },
+        execute: async (input) => {
+          requireBridge().addAnnotation({
+            anchorId: input.anchorId as string,
+            type: "images",
+            title: input.title as string | undefined,
+            content: input.note as string | undefined,
+            images: input.images as AnnotationImageInput[],
+            relatedNodeIds: input.relatedNodeIds as string[] | undefined,
+          });
+          return toolResult({ ok: true, anchorId: input.anchorId, imageCount: (input.images as unknown[]).length });
+        },
+      },
+      {
         name: "add_highlight",
         title: "Highlight meaning in the article",
         description: "Apply one restrained semantic highlight to an anchored passage and optionally explain why it matters.",
@@ -659,15 +682,18 @@ export function useWebMCP(): WebMCPStatus {
       {
         name: "create_visualization",
         title: "Transform the visual canvas",
-        description: `Create the most useful Diagram, Timeline, Comparison, Image Board, Map, or Interactive widget. Build it from the research layer when one exists, or directly from the article and your own sources when it does not — this tool never requires existing research nodes. Diagram data uses diagram.nodes items with id, label, description, and sourceNodeIds, plus diagram.edges items with from, to, and an optional label — the page runs the graph layout itself, so send the relationships and let layout choose the reading direction. Image Board data uses imageBoard items with id, title, imageUrl, note, sourceUrl, and sourceLabel. Map data uses map.markers items with id, label, lat, lng, note, kind, sourceUrl, sourceLabel, and sourceNodeIds, plus optional map.center {lat,lng}, map.zoom (1-19), and map.focusMarkerId; supply real WGS84 coordinates yourself, since the page does not geocode place names. Interactive data uses interactive with id, title, note, sourceNodeIds, and html: one self-contained document body with inline <style> and <script> and no external references, at most ${MAX_INTERACTIVE_HTML_CHARACTERS} characters. It runs in a sandboxed frame with no network, no storage, and no access to this page, so build everything you need inline; call livingPage.setState(value) from inside it whenever the reader changes something, and read that value back with get_canvas_state. The underlying research data remains unchanged.`,
+        description: `Fill the one visual canvas. It holds exactly two kinds of thing, and sending a new one replaces what is there. "interactive" is an html widget you write yourself, and it is how you draw a diagram, a chronology, a comparison, a model the reader can operate, or anything else made of text and markup. "map" is host-drawn, and is the right answer only when the subject is really places — the sandbox blocks the network map tiles come from, so a widget cannot draw one. Pictures are neither: the sandbox cannot load an external image, so put them beside the passage with insert_image_layer. Build from the research layer when one exists, or directly from the article and your own sources when it does not — this tool never requires existing research nodes.
+
+Map data uses map.markers items with id, label, lat, lng, note, kind, sourceUrl, sourceLabel, and sourceNodeIds, plus optional map.center {lat,lng}, map.zoom (1-19), and map.focusMarkerId; supply real WGS84 coordinates yourself, since the page does not geocode place names.
+
+Interactive data uses interactive with id, title, note, sourceNodeIds, and html: one self-contained document body with inline <style> and <script> and no external references, at most ${MAX_INTERACTIVE_HTML_CHARACTERS} characters. Build something the reader can work, not a lone slider: controls that change the assumptions the passage makes, and feedback that shows what those assumptions do. When you are drawing a comparison, name the comparison axis in the header, keep every row measured on that same axis, put the rows where the difference actually shows first, and let the reader re-sort or highlight only the differences — a static table of unrelated rows is what this replaced. It runs in a sandboxed frame with no network, no storage, and no access to this page, so build everything you need inline: no CDN script, stylesheet, font, or image will load, so draw charts as inline <svg> or on a <canvas> and write any icon yourself. The frame measures the natural height of your document and caps it at ${MAX_INTERACTIVE_FRAME_HEIGHT}px, so lay the widget out in ordinary document flow — 100vh, height:100%, and position:fixed collapse it to nothing. The surrounding page is light, so keep the widget light too. Two calls reach back out of the frame: livingPage.setState(value) whenever the reader changes something, which you read back with get_canvas_state, and livingPage.openCard(nodeId) to open one research card — wire it to any element you built from a research node, using the ids from get_research_layer, so a click still reaches the sourced card behind it. The underlying research data remains unchanged.`,
         inputSchema: {
           type: "object",
           required: ["type", "title", "data"],
           properties: {
-            type: { type: "string", enum: ["diagram", "timeline", "comparison_table", "image_board", "map", "interactive"] },
+            type: { type: "string", enum: ["interactive", "map"] },
             title: { type: "string", maxLength: 120 },
             sourceNodeIds: { type: "array", items: { type: "string" }, maxItems: 30 },
-            layout: { type: "string", maxLength: 60, description: "Reading direction for a Diagram canvas: \"vertical\" (default, top to bottom) or \"horizontal\" (left to right). Other canvases ignore it." },
             data: { type: "object" },
             config: { type: "object" },
           },
@@ -678,7 +704,7 @@ export function useWebMCP(): WebMCPStatus {
             type: input.type as CanvasType,
             title: input.title as string,
             focusedNodeIds: input.sourceNodeIds as string[] | undefined,
-            layout: (input.layout as string | undefined) ?? "auto",
+            layout: "auto",
             visualConfig: (input.config as CanvasViewState["visualConfig"] | undefined) ?? {},
             data: input.data as VisualizationData,
           };
@@ -734,14 +760,13 @@ export function useWebMCP(): WebMCPStatus {
       {
         name: "update_visualization",
         title: "Update the visual canvas",
-        description: "Update or reframe the current visualization while preserving its source-linked research data.",
+        description: "Update or reframe the current visualization while preserving its source-linked research data. Send the full interactive html again to change the widget; send map data again to change the markers.",
         inputSchema: {
           type: "object",
           properties: {
-            type: { type: "string", enum: ["diagram", "timeline", "comparison_table", "image_board", "map", "interactive"] },
+            type: { type: "string", enum: ["interactive", "map"] },
             title: { type: "string", maxLength: 120 },
             sourceNodeIds: { type: "array", items: { type: "string" }, maxItems: 30 },
-            layout: { type: "string", maxLength: 60, description: "Reading direction for a Diagram canvas: \"vertical\" (default, top to bottom) or \"horizontal\" (left to right). Other canvases ignore it." },
             data: { type: "object" },
             config: { type: "object" },
           },
@@ -753,7 +778,7 @@ export function useWebMCP(): WebMCPStatus {
             type: (input.type as CanvasType | undefined) ?? current.type,
             title: (input.title as string | undefined) ?? current.title,
             focusedNodeIds: (input.sourceNodeIds as string[] | undefined) ?? current.focusedNodeIds,
-            layout: (input.layout as string | undefined) ?? current.layout,
+            layout: current.layout,
             visualConfig: (input.config as CanvasViewState["visualConfig"] | undefined) ?? current.visualConfig,
             data: (input.data as VisualizationData | undefined) ?? current.data,
           });

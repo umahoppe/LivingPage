@@ -4,25 +4,25 @@
 
 Living Page is an agent-native layer for understanding the web. A person selects something in the article and an agent turns its answer into interface: an inline explanation, a simplified layer, a semantic highlight, a sourced verification, a research branch, or a visualization. Research Garden remains the deep-research mode inside that experience.
 
-Public articles can be imported by URL. The Sites Worker extracts readable headings, paragraphs, quotes, authorship, publication metadata, and a representative image into same-origin structured content. Scripts, forms, embeds, local-network targets, unsupported content types, and oversized responses are rejected.
+Public articles can be imported by URL. The Sites Worker produces two synchronized forms from the same Readability DOM: structured blocks for research and a safe static snapshot that retains the article's classes, images, inline styles, and a bounded set of HTTPS stylesheets. Scripts, forms, embeds, local-network targets, unsupported content types, and oversized responses are rejected.
 
-Links inside an imported article stay readable. Every `<a href>` is resolved against the article's own base URL and kept as an offset range in the block text, so a click opens the linked page in a side reader — same extraction, same safety checks — without touching the research layer. The reader follows further links with a back step, offers the original in a new tab, and can promote the linked page to the main article.
+Imported articles form a small research browser. Every `<a href>` is resolved against the article's own URL, and a click imports the destination through the same safety checks instead of letting untrusted content navigate the frame. Back and Forward restore the complete per-page research document — anchors, marks, inline layers, sources, canvas, and Undo history — for up to six recent pages. The toolbar also finds text immediately inside the current snapshot. Text entered in its address field instead of a URL becomes a document-scoped web-search mark for the WebMCP agent; this is deliberately queued rather than pretending that page-side tool registration can launch an agent by itself.
 
 ## Golden path
 
 1. Import a public article URL, or use the built-in demo article.
-2. Select a sentence and choose Explain, Simplify, Visualize, Map, Research, or Verify. Follow any in-article link in the side reader when the source itself answers the question.
-3. The selection becomes a durable text anchor and the choice lands in the in-page **request queue** — nothing is copied to the clipboard, and nothing is sent yet. Keep reading and mark as many passages as you like; the ask bar adds free-text requests for anything the presets do not cover, and with nothing selected it asks about the article as a whole.
+2. Select a sentence and choose Explain, Simplify, Visualize, Research, or Verify. Follow any in-article link in the side reader when the source itself answers the question.
+3. The selection becomes a durable text anchor and the choice waits on that passage in the **Layers** tab — nothing is copied to the clipboard, and nothing is sent yet. Keep reading and mark as many passages as you like; the ask bar adds free-text requests for anything the five presets do not cover, and with nothing selected it asks about the article as a whole.
 4. Say one sentence in your agent chat — *Process my marks.* A WebMCP-capable agent reads the whole queue, works through it in the order you marked it, and updates the article or Visual Thinking Canvas.
-5. Reframe the same research as Research, Diagram, Timeline, Comparison, a sourced Image Board, a Map of the places involved, or an Interactive widget you can operate — without changing the underlying sources.
+5. The Canvas holds whatever the agent last sent: a Map of the places involved, or an interactive widget it wrote — a diagram, a chronology, a comparison you can re-sort, a model you can operate. There is no view to pick; the agent decides the shape and the underlying sources never change.
 6. Track every anchored passage in the Layers tab — inline explanations, simplifications, highlights, verifications, and research cards all stay listed with the passage they belong to, and selecting one scrolls the article back to it.
-7. Review provenance in place, open image previews, remove mistaken anchors or individual cards, or undo the complete operation.
+7. Pictures arrive beside the text rather than on the canvas, as an image layer on the passage they belong to. Review provenance in place, open image previews, remove mistaken anchors or cards, or undo the complete operation.
 
 ## PDF import
 
 A PDF URL imports and works, but the import dialog does not offer it. Extraction quality is uneven in ways the reader cannot predict from the URL alone — see the layout caveats below — so the page makes no promise it cannot keep for an arbitrary file. Paste one and it is read; the refusals below explain themselves when it cannot be.
 
-A PDF reaches the page as the same `ArticleDocument` an HTML import produces, so anchoring, the request queue, inline layers, research cards, and every canvas work on it unchanged. What differs is what a PDF can carry.
+A PDF reaches the page as the same `ArticleDocument` an HTML import produces, so anchoring, queued marks, inline layers, research cards, and the canvas work on it unchanged. What differs is what a PDF can carry.
 
 A PDF has no paragraphs — it has lines placed on a page — so the worker rebuilds them. Lines are joined into paragraphs, a word broken across a line break loses its hyphen, and a line that stops short of the column width ends its paragraph. Lines that repeat identically across pages are running heads or footers and are dropped, as are bare folios. A short unpunctuated line standing alone becomes a heading, which is what lets a section title survive the length floor that body text has to clear.
 
@@ -34,7 +34,9 @@ A scanned PDF parses perfectly and yields nothing. Rather than importing a blank
 
 The selection menu does not produce a message for you to carry. Every pick appends a request to a queue that lives on the page: intent, the anchored quote and its surrounding context, and the prompt. You read at your own pace, marking Explain here and Verify there, and the chat round trip collapses into a single sentence at the end.
 
-The agent then drives the whole batch itself. `get_pending_requests` returns the queue in order — each entry with its `requestId`, `anchorId`, exact quote, surrounding context, the tools that fit its intent, and what is already attached to that passage — and `resolve_request` clears one entry at a time with a one-line summary, or marks it `skipped` with a reason. The panel counts down as the agent works, and resolved entries stay listed with what the agent said it did.
+The queue has no tab of its own, because a pending request is a state a passage is in rather than a separate list. Each mark shows as a **waiting** badge on the anchor it was made on in Layers, and opening that row shows the prompt with its own remove button; a question about the whole article sits in one pinned row at the top. The count in the ask bar copies the full handoff text for your agent.
+
+The agent then drives the whole batch itself. `get_pending_requests` returns the queue in order — each entry with its `requestId`, `anchorId`, exact quote, surrounding context, the tools that fit its intent, and what is already attached to that passage — and `resolve_request` clears one entry at a time with a one-line summary, or marks it `skipped` with a reason. The badges clear as the agent works, and resolved entries stay listed at the bottom of Layers with what the agent said it did.
 
 ## Who may anchor
 
@@ -61,14 +63,21 @@ Queue state deliberately sits outside the research document: marking a new passa
 - `insert_simplified_layer` — adds reversible plain-language text without replacing the original.
 - `add_highlight` — applies a restrained semantic highlight with a reason.
 - `add_verification` — adds a cautious source-backed verification state.
-- `create_visualization` / `update_visualization` — transforms and automatically opens the right canvas as a Diagram, Timeline, Comparison, sourced Image Board, Map, or sandboxed Interactive widget.
+- `insert_image_layer` — puts a strip of sourced pictures beside the passage, where the sandbox cannot reach.
+- `create_visualization` / `update_visualization` — fills the one canvas with a Map or a sandboxed Interactive widget, and opens it.
 - `set_map_view` — pans, zooms, or flies the Map canvas to one marker without resending the markers.
 
-The research panel separates the three parts of the work: **Layers** is the source of truth for anchors, inline explanations, and research cards; **Queue** holds the requests you have marked but not yet handed off; and **Canvas** holds only explicitly created Diagram, Timeline, Comparison, Image Board, Map, and Interactive views. Agent updates open the tab that received them.
+The research panel has two tabs. **Layers** is the source of truth: every anchor with its inline explanations, image strips, research cards, and the marks still waiting on it. **Canvas** holds the one visual surface. Agent updates open the tab that received them.
 
-## Diagram canvas
+## One canvas
 
-`create_visualization` with `type: "diagram"` draws a real directed graph, not a stack of cards. The agent sends `diagram.nodes` (`id`, `label`, `description`, `sourceNodeIds`) and `diagram.edges` (`from`, `to`, optional `label`); the page runs the layout itself with dagre, routes the edges, and places the edge labels, so the agent only has to know the relationships. `layout` picks the reading direction — `"vertical"` (default, top to bottom) or `"horizontal"` — and `update_visualization` can flip it without resending the graph. Clicking a node still opens its sourced research card, and each node keeps its own remove button, so a mistaken node can be deleted and restored with Undo. Agent data is untrusted here too: duplicate ids, self loops, and edges pointing at nodes the diagram does not contain are dropped rather than drawn, and cycles lay out without hanging. Research nodes never become a diagram, timeline, or comparison automatically; those views stay empty until an agent explicitly builds them.
+The canvas used to be six views behind a switcher, with only one of them alive at a time — the reader picked a tab and the previous view was gone. It is now one surface, and what the agent last sent is what shows.
+
+That leaves two kinds of thing. An **Interactive** widget is html the agent writes, and it is how a diagram, a chronology, or a comparison gets drawn now: those were only ever text and shapes, and an agent that writes them itself can make them do things a fixed renderer could not — re-sortable columns, differences highlighted, an axis the reader switches. A **Map** stays host-drawn, because the sandbox has no network and map tiles come over one.
+
+Pictures are neither, for the same reason: the sandbox cannot load an external image. They go beside the passage as an image layer, which is also where the reader wants them — next to the sentence, not on a surface they have to switch to.
+
+Research nodes never fill the canvas on their own. It stays empty until an agent explicitly builds something.
 
 ## Where the reader is looking
 
@@ -88,7 +97,7 @@ Some answers are not a picture but a thing to operate: a break-even model, a rat
 
 It runs in an isolated frame. The sandbox is `allow-scripts` and nothing else: without `allow-same-origin` the widget lives on an opaque origin, so it cannot read this page's DOM, its `localStorage`, or its cookies. A CSP meta tag inside the frame sets `default-src 'none'`, which leaves it no network at all — no fetch, no external script or stylesheet, no image or font from another host, no form submission. Because those resources would be dead on arrival, the page rejects widget HTML that references them rather than rendering something that silently fails, and a widget is capped at 60,000 characters.
 
-The widget talks back through one channel. Inside the frame, `livingPage.setState(value)` posts a small plain-data value to the page, which stores it as the reader's live position — at most 4,000 characters of JSON, no more durable than a scroll offset. `get_canvas_state` returns it as `interactiveState`, so the agent can read the slider the reader actually moved and answer from there, and the widget's frame is also what `readerFocus` reports. Reset throws the frame away and builds it again from the same source; Remove deletes the widget, and Undo restores it like any other canvas card.
+The widget talks back through two calls, and nothing else. `livingPage.setState(value)` posts a small plain-data value to the page, which stores it as the reader's live position — at most 4,000 characters of JSON, no more durable than a scroll offset. `get_canvas_state` returns it as `interactiveState`, so the agent can read the slider the reader actually moved and answer from there, and the widget's frame is also what `readerFocus` reports. `livingPage.openCard(nodeId)` opens one sourced research card, which is what a widget-drawn diagram or comparison uses in place of the card click a host-drawn canvas used to give; the frame is untrusted, so a card the page does not hold opens nothing and says so. Reset throws the frame away and builds it again from the same source; Remove deletes the widget whole, and Undo restores it.
 
 This does not make the article executable. Imported article text is never run as code — it is extracted as structured text, and scripts, forms, and embeds are dropped at import. The only code that runs is code an agent wrote in response to the reader's own request, and it runs walled off from the page it sits beside.
 
@@ -110,13 +119,13 @@ npm run lint
 npm run build
 ```
 
-The end-to-end tests inject a browser-side WebMCP host, execute the actual registered tools, and verify inline explanation, simplification, highlight, sourced verification, visualization, visible branch creation, grouped Undo/Redo, persistence after reload, and browser console health. The map tests stub the tile server, then check marker rendering, the reported viewport, agent-driven focus, reader-driven zoom, and marker removal with Undo. The diagram tests cover the routed edges and their labels, the reading direction and flipping it, and the reader focus an agent reads back after a node is clicked; the layout itself is unit tested for placement, direction, cycles, and malformed agent data.
+The end-to-end tests inject a browser-side WebMCP host, execute the actual registered tools, and verify inline explanation, simplification, highlight, sourced verification, visualization, visible branch creation, grouped Undo/Redo, persistence after reload, and browser console health. The map tests stub the tile server, then check marker rendering, the reported viewport, agent-driven focus, reader-driven zoom, and marker removal with Undo. The canvas tests check that there is no view switcher, that the canvas stays empty until an agent builds something, and that a widget-drawn chronology can open a sourced research card through `livingPage.openCard` while a card the page does not hold opens nothing.
 
 The anchoring test asks a whole-article question with nothing selected, then has the agent read the blocks, anchor the exact claim, verify it, and clear the request — checking that the derived anchor lands on the right offsets and is attributed to the agent, that an invented quote and an unprompted anchor are both refused, and that the result survives a reload and undoes like any other anchor.
 
-The queue test marks three passages with three different intents, checks that nothing reaches the clipboard, then reads the queue through `get_pending_requests`, applies each entry, clears it with `resolve_request` (including one skip), and verifies the counts, the resolved history, and persistence across a reload.
+The queue test marks three passages with three different intents, checks that nothing reaches the clipboard until the ask-bar count is clicked, then reads the queue through `get_pending_requests`, applies each entry, clears it with `resolve_request` (including one skip), and verifies the waiting badges, the resolved history, and persistence across a reload. The image test has an agent attach a picture strip beside a passage, opens the preview, and checks that the same pictures are refused on the canvas.
 
-The interactive test has an agent send a slider widget, drives the slider as a reader, and reads the reported value back through `get_canvas_state` — including the widget's own probe showing that the parent document and `localStorage` are both out of reach — then checks that an external script is refused, that Reset clears the reported state, and that Remove and Undo behave like any other canvas card.
+The interactive test has an agent send a slider widget, drives the slider as a reader, and reads the reported value back through `get_canvas_state` — including the widget's own probe showing that the parent document and `localStorage` are both out of reach — then checks that an external script is refused, that Reset clears the reported state, and that Remove and Undo behave like any other canvas change.
 
 The import tests verify URL safety checks, readable-content extraction, imported article persistence, and WebMCP context for the imported source. The PDF tests build real PDFs and run them through the parser: paragraph reconstruction from wrapped lines, hyphen repair, running heads and folios dropped, headings kept, metadata and dates read, and refusals for a scan with no text layer, a file too thin to read, an unreadable file, and one past the size budget. An end-to-end test imports a PDF-shaped article and anchors and verifies a passage in it, checking that a document with no links and no hero image still supports the full layer stack.
 

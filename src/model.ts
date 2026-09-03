@@ -1,6 +1,7 @@
 import type {
   Actor,
   AnchorPassageInput,
+  AnnotationImage,
   AnnotationInput,
   ArticleBlock,
   ArticleDocument,
@@ -11,6 +12,7 @@ import type {
   NodeInput,
   PendingRequest,
   RequestInput,
+  RequestIntent,
   ResearchAnchor,
   ResearchDocument,
   ResearchNode,
@@ -31,10 +33,10 @@ export const emptyDocument = (): ResearchDocument => ({
   sources: [],
   annotations: [],
   canvasView: {
-    type: "diagram",
-    title: "Diagram",
+    type: "interactive",
+    title: "Canvas",
     focusedNodeIds: [],
-    layout: "vertical",
+    layout: "auto",
     filters: [],
     visualConfig: {},
     data: {},
@@ -119,25 +121,50 @@ function withAnchorAuthors(document: ResearchDocument): ResearchDocument {
   };
 }
 
-function withoutLegacyResearchCanvas(document: ResearchDocument): ResearchDocument {
-  if (document.canvasView.type !== "research_graph") return document;
+/**
+ * The canvas used to hold six kinds of view. A document saved back then still carries one of the
+ * retired types and its data; the retired shapes have no renderer any more, so they are dropped
+ * rather than left to render as an empty canvas the reader cannot explain.
+ */
+function withoutLegacyCanvasTypes(document: ResearchDocument): ResearchDocument {
+  const view = document.canvasView;
+  const isLive = view.type === "map" || view.type === "interactive";
+  const data = { map: view.data?.map, interactive: view.data?.interactive };
+  const hasStaleData = Object.keys(view.data ?? {}).some((key) => key !== "map" && key !== "interactive");
+  if (isLive && !hasStaleData) return document;
+  const type = data.map?.markers.length ? "map" : "interactive";
   return {
     ...document,
     canvasView: {
-      ...document.canvasView,
-      type: "diagram",
-      title: "Diagram",
-      layout: "vertical",
+      ...view,
+      type,
+      title: isLive ? view.title : type === "map" ? "Map" : "Canvas",
+      data,
     },
   };
 }
 
-const normalizeDocument = (document: ResearchDocument) => withoutLegacyResearchCanvas(withAnchorAuthors(normalizeDocumentBlockIds(document)));
+const normalizeDocument = (document: ResearchDocument) => withoutLegacyCanvasTypes(withAnchorAuthors(normalizeDocumentBlockIds(document)));
+
+/** Compare, Map, and Interact were folded into one Visualize intent; a queued mark keeps working. */
+const LEGACY_INTENTS: Record<string, RequestIntent> = {
+  compare: "visualize",
+  map: "visualize",
+  interact: "visualize",
+};
+
+function normalizeRequest(request: PendingRequest): PendingRequest {
+  return {
+    ...request,
+    anchorId: request.anchorId ?? null,
+    intent: LEGACY_INTENTS[request.intent] ?? request.intent,
+  };
+}
 
 export function normalizeResearchState(state: ResearchState): ResearchState {
   return withLiveRequests({
     ...state,
-    requests: (state.requests ?? []).map((request) => ({ ...request, anchorId: request.anchorId ?? null })),
+    requests: (state.requests ?? []).map(normalizeRequest),
     document: normalizeDocument(state.document),
     undoStack: state.undoStack.map((entry) => ({ ...entry, document: normalizeDocument(entry.document) })),
     redoStack: state.redoStack.map((entry) => ({ ...entry, document: normalizeDocument(entry.document) })),
@@ -400,15 +427,7 @@ export function replaceArticle(state: ResearchState, article: ArticleDocument): 
     nodes: [],
     sources: [],
     annotations: [],
-    canvasView: {
-      type: "diagram",
-      title: "Diagram",
-      focusedNodeIds: [],
-      layout: "vertical",
-      filters: [],
-      visualConfig: {},
-      data: {},
-    },
+    canvasView: emptyDocument().canvasView,
   });
   return withLiveRequests(commitDocument(state, next, `Imported article: ${article.title}`, "human"));
 }
@@ -429,9 +448,12 @@ export function addAnnotation(state: ResearchState, input: AnnotationInput, acto
   if (relatedNodeIds.some((id) => !state.document.nodes.some((node) => node.id === id))) {
     throw new Error("Annotation references an unknown research node");
   }
+  const images = validatedAnnotationImages(input);
+  if (input.type === "images" && !images?.length) throw new Error("An image layer needs at least one image");
   const annotation = {
     ...input,
     sources: validateAnnotationSources(input),
+    images,
     relatedNodeIds,
     id: makeId("annotation"),
     createdBy: actor,
@@ -446,7 +468,9 @@ export function addAnnotation(state: ResearchState, input: AnnotationInput, acto
       ? "Highlighted the article"
       : input.type === "verification"
         ? "Added claim verification"
-        : "Added an inline explanation";
+        : input.type === "images"
+          ? "Added images beside the text"
+          : "Added an inline explanation";
   return commitDocument(state, next, label, actor);
 }
 
@@ -521,20 +545,14 @@ export function removeAnchor(state: ResearchState, anchorId: string): ResearchSt
   }, "Removed an article anchor and its layers", "human"));
 }
 
+/**
+ * A widget is one thing the agent wrote, so it is removed whole. A map keeps per-marker removal,
+ * because the host drew each marker and can take one away without invalidating the rest.
+ */
 export function removeCanvasItem(state: ResearchState, itemId: string): ResearchState {
   const data = state.document.canvasView.data;
   const nextData = {
     ...data,
-    diagram: data.diagram ? {
-      nodes: data.diagram.nodes.filter((node) => node.id !== itemId),
-      edges: data.diagram.edges.filter((edge) => edge.from !== itemId && edge.to !== itemId),
-    } : undefined,
-    timeline: data.timeline?.filter((item) => item.id !== itemId),
-    comparison: data.comparison ? {
-      ...data.comparison,
-      rows: data.comparison.rows.filter((row, index) => (row.id ?? `row-${index}`) !== itemId),
-    } : undefined,
-    imageBoard: data.imageBoard?.filter((item) => item.id !== itemId),
     interactive: data.interactive?.id === itemId ? undefined : data.interactive,
     map: data.map ? {
       ...data.map,
@@ -549,27 +567,54 @@ export function removeCanvasItem(state: ResearchState, itemId: string): Research
 }
 
 function validatedCanvasData(data: CanvasViewState["data"]) {
-  const imageBoard = data.imageBoard?.map((item) => {
-    const imageUrl = new URL(item.imageUrl);
-    if (!['http:', 'https:'].includes(imageUrl.protocol)) throw new Error(`Unsupported image URL protocol: ${imageUrl.protocol}`);
-    let sourceUrl: string | undefined;
-    if (item.sourceUrl) {
-      const parsed = new URL(item.sourceUrl);
-      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error(`Unsupported source URL protocol: ${parsed.protocol}`);
-      sourceUrl = parsed.toString();
-    }
-    return { ...item, imageUrl: imageUrl.toString(), sourceUrl };
-  });
   return {
-    ...data,
-    imageBoard,
     map: data.map ? validatedMapData(data.map) : undefined,
     interactive: data.interactive ? validatedInteractiveData(data.interactive) : undefined,
   };
 }
 
+const MAX_ANNOTATION_IMAGES = 12;
+
+/** The pictures beside a passage are host-drawn, so their URLs are checked the way sources are. */
+function validatedAnnotationImages(input: AnnotationInput): AnnotationImage[] | undefined {
+  if (!input.images) return undefined;
+  if (input.images.length > MAX_ANNOTATION_IMAGES) {
+    throw new Error(`An image layer holds at most ${MAX_ANNOTATION_IMAGES} images`);
+  }
+  return input.images.map((image) => {
+    const title = image.title?.trim();
+    if (!title) throw new Error("Every image needs a title");
+    const imageUrl = new URL(image.imageUrl);
+    if (!['http:', 'https:'].includes(imageUrl.protocol)) {
+      throw new Error(`Unsupported image URL protocol: ${imageUrl.protocol}`);
+    }
+    let sourceUrl: string | undefined;
+    if (image.sourceUrl) {
+      const parsed = new URL(image.sourceUrl);
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        throw new Error(`Unsupported source URL protocol: ${parsed.protocol}`);
+      }
+      sourceUrl = parsed.toString();
+    }
+    return {
+      id: makeId("image"),
+      title,
+      imageUrl: imageUrl.toString(),
+      note: image.note,
+      sourceUrl,
+      sourceLabel: image.sourceLabel,
+    };
+  });
+}
+
 /** A sandboxed widget is a page-sized document, not a bundle: it is capped and must be self-contained. */
 export const MAX_INTERACTIVE_HTML_CHARACTERS = 60_000;
+
+/**
+ * The frame grows to its content and stops here. The agent is told the number, because a widget
+ * laid out against the viewport instead of the document collapses inside a frame it cannot see.
+ */
+export const MAX_INTERACTIVE_FRAME_HEIGHT = 1_200;
 
 /**
  * The frame runs with no network of its own, so anything it would have to fetch is dead markup.
@@ -642,8 +687,8 @@ export function setCanvasView(
   input: Partial<CanvasViewState> & Pick<CanvasViewState, "type">,
   actor: Actor,
 ): ResearchState {
-  if (input.type === "research_graph") {
-    throw new Error("Research cards belong in Layers. Create a Diagram, Timeline, Comparison, Image Board, Map, or Interactive canvas instead.");
+  if (input.type !== "map" && input.type !== "interactive") {
+    throw new Error("The canvas holds one Map or one Interactive widget. Draw a diagram, timeline, or comparison as an interactive widget; put pictures beside the passage with insert_image_layer.");
   }
   const nextView: CanvasViewState = {
     ...state.document.canvasView,

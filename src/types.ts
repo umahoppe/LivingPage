@@ -11,17 +11,15 @@ export type BranchType =
 export type ContentType = "text" | "webpage" | "image" | "pdf" | "table";
 export type Actor = "human" | "agent";
 
-export type LivingAnnotationType = "explanation" | "simplification" | "highlight" | "verification";
+export type LivingAnnotationType = "explanation" | "simplification" | "highlight" | "verification" | "images";
 export type HighlightType = "important" | "claim" | "data" | "evidence" | "uncertain";
 export type VerificationStatus = "supported" | "mixed" | "unsupported" | "uncertain";
-export type CanvasType =
-  | "research_graph"
-  | "diagram"
-  | "timeline"
-  | "comparison_table"
-  | "image_board"
-  | "map"
-  | "interactive";
+/**
+ * The canvas is one surface, not a set of tabs. Everything an agent can draw with text and
+ * markup — a diagram, a timeline, a comparison — is an Interactive widget it writes itself.
+ * A Map stays host-drawn because the sandbox blocks the network its tiles come from.
+ */
+export type CanvasType = "map" | "interactive";
 
 export interface ArticleLink {
   start: number;
@@ -46,6 +44,11 @@ export interface ArticleDocument {
   siteName: string;
   heroImageUrl?: string;
   importedAt?: string;
+  /**
+   * A script-free, article-only rendering of the imported page. Blocks and this markup are
+   * produced from the same Readability DOM, so data-rg-block-id text stays anchor-compatible.
+   */
+  snapshotHtml?: string;
   blocks: ArticleBlock[];
 }
 
@@ -103,6 +106,8 @@ export interface LivingAnnotation {
   reason?: string;
   status?: VerificationStatus;
   sources?: AnnotationSource[];
+  /** Set on an "images" layer: the pictures shown beside the passage, in the order the agent sent them. */
+  images?: AnnotationImage[];
   relatedNodeIds: string[];
   createdBy: Actor;
   createdAt: string;
@@ -110,42 +115,25 @@ export interface LivingAnnotation {
   isPinned: boolean;
 }
 
-export interface DiagramNode {
-  id: string;
-  label: string;
-  description?: string;
-  sourceNodeIds?: string[];
-}
-
-export interface DiagramEdge {
-  from: string;
-  to: string;
-  label?: string;
-}
-
-export interface TimelineItem {
-  id: string;
-  date: string;
-  title: string;
-  description?: string;
-  sourceNodeIds?: string[];
-}
-
-export interface ComparisonRow {
-  id?: string;
-  label: string;
-  values: string[];
-  sourceNodeIds?: string[];
-}
-
-export interface ImageBoardItem {
+/**
+ * A picture lives beside the passage it belongs to, not on the canvas: the reader wants to
+ * look at it while reading. The sandbox blocks external images, so the host draws these.
+ */
+export interface AnnotationImage {
   id: string;
   title: string;
   imageUrl: string;
   note?: string;
   sourceUrl?: string;
   sourceLabel?: string;
-  sourceNodeIds?: string[];
+}
+
+export interface AnnotationImageInput {
+  title: string;
+  imageUrl: string;
+  note?: string;
+  sourceUrl?: string;
+  sourceLabel?: string;
 }
 
 export interface MapMarker {
@@ -192,10 +180,6 @@ export interface InteractiveReaderState {
 }
 
 export interface VisualizationData {
-  diagram?: { nodes: DiagramNode[]; edges: DiagramEdge[] };
-  timeline?: TimelineItem[];
-  comparison?: { columns: string[]; rows: ComparisonRow[] };
-  imageBoard?: ImageBoardItem[];
   map?: MapViewData;
   interactive?: InteractiveViewData;
 }
@@ -244,12 +228,14 @@ export interface HistoryEntry {
   document: ResearchDocument;
 }
 
+/**
+ * One visual intent, not four. Whether the answer is a diagram, a table, a map, or a widget
+ * the reader can operate is the agent's call; the reader narrows it in the ask bar.
+ */
 export type RequestIntent =
   | "explain"
   | "simplify"
   | "visualize"
-  | "compare"
-  | "map"
   | "research"
   | "verify"
   | "custom";
@@ -318,5 +304,6 @@ export interface AnnotationInput {
   reason?: string;
   status?: VerificationStatus;
   sources?: AnnotationSource[];
+  images?: AnnotationImageInput[];
   relatedNodeIds?: string[];
 }

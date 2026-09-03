@@ -18,6 +18,8 @@ const MAX_PDF_BYTES = 10_000_000;
 /** Text extraction is the expensive part of an import; a long PDF is truncated, not refused. */
 const MAX_PDF_PAGES = 60;
 const MAX_REDIRECTS = 4;
+/** Keep a short browsing history inside ordinary localStorage without allowing one page to fill it. */
+const MAX_SNAPSHOT_CHARS = 400_000;
 
 class ImportError extends Error {
   constructor(message: string, readonly status = 400) {
@@ -149,8 +151,7 @@ function applyDocumentBase(document: Document, sourceUrl: URL): URL {
   return resolved;
 }
 
-function extractBlocks(content: string, baseUrl: URL): ArticleBlock[] {
-  const { document } = parseHTML(content);
+function extractBlocks(document: Document, baseUrl: URL): ArticleBlock[] {
   const blocks: ArticleBlock[] = [];
   const seen = new Set<string>();
   let index = 0;
@@ -168,9 +169,121 @@ function extractBlocks(content: string, baseUrl: URL): ArticleBlock[] {
       text,
       ...(links.length ? { links } : {}),
     });
+    element.setAttribute("data-rg-block-id", blocks[blocks.length - 1].id);
     if (blocks.length >= 80) break;
   }
   return blocks;
+}
+
+const SNAPSHOT_CSP = [
+  "default-src 'none'",
+  "script-src 'none'",
+  "connect-src 'none'",
+  "object-src 'none'",
+  "frame-src 'none'",
+  "form-action 'none'",
+  "base-uri 'none'",
+  "style-src 'unsafe-inline' https:",
+  "img-src https: data:",
+  "font-src https: data:",
+  "media-src https:",
+].join("; ");
+
+const SNAPSHOT_STYLE = `
+html { color-scheme: light; background: #fff; }
+body { margin: 0; padding: clamp(28px, 5vw, 72px); color: #20241f; background: #fff; }
+img, picture, video { max-width: 100%; height: auto; }
+a { cursor: pointer; }
+[data-rg-block-id] { position: relative; }
+::highlight(rg-anchors) { background: rgba(244, 205, 91, .42); text-decoration: underline; text-decoration-color: #9b7830; text-underline-offset: 3px; }
+::highlight(rg-search) { background: #ffd75e; color: #171a17; }
+.rg-injected { box-sizing: border-box; font-family: system-ui, sans-serif; }
+.rg-anchor-count { float: right; margin: 2px 0 4px 10px; border: 1px solid #a9c2b0; border-radius: 999px; padding: 3px 7px; background: #edf5ef; color: #315c40; font: 700 10px/1 system-ui, sans-serif; cursor: pointer; }
+.rg-inline-layer { clear: both; margin: 10px 0 18px; border: 1px solid #cbd9ce; border-left: 3px solid #4f8060; border-radius: 9px; padding: 10px 12px; background: #f4f8f4; color: #34443a; font: 13px/1.55 system-ui, sans-serif; }
+.rg-inline-layer strong { display: block; margin-bottom: 4px; font-size: 12px; }
+.rg-inline-layer p { margin: 0; font: inherit; color: inherit; }
+.rg-document-title { margin: 0 0 .8em; font: 700 clamp(32px, 5vw, 58px)/1.08 Georgia, serif; letter-spacing: -.025em; }
+.rg-inline-images { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-top: 8px; }
+.rg-inline-images figure { margin: 0; }
+.rg-inline-images img { display: block; width: 100%; max-height: 260px; object-fit: cover; border-radius: 7px; }
+.rg-inline-images figcaption, .rg-inline-sources { display: block; margin-top: 5px; font: 11px/1.4 system-ui, sans-serif; }
+.rg-inline-sources a { margin-right: 8px; color: #315c40; }
+`;
+
+function safeSnapshotStyles(source: Document, target: Document, baseUrl: URL) {
+  for (const stylesheet of Array.from(source.querySelectorAll('link[rel~="stylesheet"][href]')).slice(0, 16)) {
+    const href = resolvePublicAsset(stylesheet.getAttribute("href"), baseUrl);
+    if (!href?.startsWith("https://")) continue;
+    const link = target.createElement("link");
+    link.setAttribute("rel", "stylesheet");
+    link.setAttribute("href", href);
+    link.setAttribute("referrerpolicy", "no-referrer");
+    target.head.appendChild(link);
+  }
+  for (const original of Array.from(source.querySelectorAll("style")).slice(0, 24)) {
+    const style = target.createElement("style");
+    style.textContent = original.textContent ?? "";
+    target.head.appendChild(style);
+  }
+}
+
+function sanitizeSnapshot(document: Document, sourceDocument: Document, baseUrl: URL, title: string) {
+  if (!document.body.querySelector("h1")) {
+    const originalTitle = sourceDocument.querySelector("h1")?.cloneNode(true) as Element | undefined;
+    if (originalTitle) document.body.prepend(originalTitle);
+    else {
+      const heading = document.createElement("h1");
+      heading.className = "rg-document-title";
+      heading.textContent = title;
+      document.body.prepend(heading);
+    }
+  }
+  for (const element of Array.from(document.querySelectorAll(
+    "script, iframe, frame, frameset, object, embed, form, input, textarea, select, option, button, meta, base, template, portal, noscript, canvas",
+  ))) element.remove();
+
+  for (const element of Array.from(document.querySelectorAll("*"))) {
+    for (const attribute of Array.from(element.attributes)) {
+      const name = attribute.name.toLowerCase();
+      if (name.startsWith("on") || ["srcdoc", "formaction", "autofocus", "contenteditable", "download"].includes(name)) {
+        element.removeAttribute(attribute.name);
+      }
+    }
+    if (element.localName === "a") {
+      const href = element.getAttribute("href");
+      if (href?.startsWith("#")) {
+        element.setAttribute("href", href);
+      } else {
+        const safe = resolvePublicAsset(href, baseUrl);
+        if (safe) element.setAttribute("href", safe);
+        else element.removeAttribute("href");
+      }
+      element.setAttribute("target", "_self");
+      element.setAttribute("rel", "noreferrer nofollow");
+    }
+  }
+
+  document.documentElement.setAttribute("lang", sourceDocument.documentElement.getAttribute("lang") || "en");
+  document.body.className = `${sourceDocument.body?.className ?? ""} rg-snapshot`.trim();
+  if (sourceDocument.body?.id) document.body.id = sourceDocument.body.id;
+  document.head.replaceChildren();
+  const meta = document.createElement("meta");
+  meta.setAttribute("http-equiv", "Content-Security-Policy");
+  meta.setAttribute("content", SNAPSHOT_CSP);
+  document.head.appendChild(meta);
+  const referrer = document.createElement("meta");
+  referrer.setAttribute("name", "referrer");
+  referrer.setAttribute("content", "no-referrer");
+  document.head.appendChild(referrer);
+  const titleNode = document.createElement("title");
+  titleNode.textContent = title;
+  document.head.appendChild(titleNode);
+  safeSnapshotStyles(sourceDocument, document, baseUrl);
+  const gardenStyle = document.createElement("style");
+  gardenStyle.textContent = SNAPSHOT_STYLE;
+  document.head.appendChild(gardenStyle);
+  const html = document.toString();
+  return html.length <= MAX_SNAPSHOT_CHARS ? html : undefined;
 }
 
 export async function extractArticle(html: string, sourceUrl: URL): Promise<ArticleDocument> {
@@ -185,11 +298,14 @@ export async function extractArticle(html: string, sourceUrl: URL): Promise<Arti
 
   const parsed = new Readability(document as unknown as Document, {
     charThreshold: 240,
-    keepClasses: false,
+    keepClasses: true,
   }).parse();
   if (!parsed?.content || !parsed.textContent) throw new ImportError("We could not identify a readable article on this page.", 422);
 
-  let blocks = extractBlocks(parsed.content, baseUrl);
+  // linkedom treats a lone Readability root <div> as documentElement. Give it a real document
+  // shell so security-sensitive <meta> policy stays inside <head> after serialization.
+  const { document: contentDocument } = parseHTML(`<!doctype html><html><head></head><body>${parsed.content}</body></html>`);
+  let blocks = extractBlocks(contentDocument as unknown as Document, baseUrl);
   if (blocks.length < 2) {
     const fallback = parsed.textContent
       .split(/\n{2,}/)
@@ -201,8 +317,13 @@ export async function extractArticle(html: string, sourceUrl: URL): Promise<Arti
   }
   if (blocks.length < 2) throw new ImportError("The page did not contain enough readable article text.", 422);
 
-  const { document: contentDocument } = parseHTML(parsed.content);
   const contentImage = contentDocument.querySelector("img")?.getAttribute("src");
+  const snapshotHtml = sanitizeSnapshot(
+    contentDocument as unknown as Document,
+    document as unknown as Document,
+    baseUrl,
+    cleanText(parsed.title) || cleanText(document.title) || "Imported article",
+  );
   return {
     id: await articleId(sourceUrl),
     title: cleanText(parsed.title) || cleanText(document.title) || "Imported article",
@@ -213,6 +334,7 @@ export async function extractArticle(html: string, sourceUrl: URL): Promise<Arti
     siteName,
     heroImageUrl: resolvePublicAsset(originalHero || contentImage, baseUrl),
     importedAt: new Date().toISOString(),
+    snapshotHtml,
     blocks,
   };
 }

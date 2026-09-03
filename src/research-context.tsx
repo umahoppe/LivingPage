@@ -17,8 +17,10 @@ import {
   addSource,
   clearResolvedRequests,
   enqueueRequest,
+  emptyState,
   loadState,
   markQueueRead,
+  normalizeResearchState,
   replaceArticle as replaceArticleInState,
   removeAnchor as removeAnchorFromState,
   removeAnnotation as removeAnnotationFromState,
@@ -90,6 +92,10 @@ interface ResearchContextValue {
   anchorPassageForRequest: (input: AnchorPassageInput) => { anchor: ResearchAnchor; alreadyExisted: boolean };
   setCurrentSelection: (selection?: LiveSelection) => void;
   replaceArticle: (article: ArticleDocument) => void;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  goBack: () => void;
+  goForward: () => void;
   createNodes: (command: CreateNodesCommand, actor: Actor) => ResearchNode[];
   addSourceToNode: (nodeId: string, source: SourceInput, actor: Actor) => void;
   addQuickBranch: (anchorId: string, type: BranchType) => void;
@@ -111,6 +117,52 @@ interface ResearchContextValue {
 
 const ResearchContext = createContext<ResearchContextValue | null>(null);
 
+interface BrowsingEntry {
+  id: string;
+  state: ResearchState;
+}
+
+interface BrowsingSession {
+  entries: BrowsingEntry[];
+  index: number;
+}
+
+const BROWSING_KEY = "research-garden:browsing:v1";
+const MAX_BROWSING_ENTRIES = 6;
+
+function loadBrowsingSession(): BrowsingSession {
+  const fallback = loadState();
+  try {
+    const raw = localStorage.getItem(BROWSING_KEY);
+    if (!raw) return { entries: [{ id: fallback.document.article.id, state: fallback }], index: 0 };
+    const parsed = JSON.parse(raw) as BrowsingSession;
+    if (!Array.isArray(parsed.entries) || !parsed.entries.length) throw new Error("Empty browsing session");
+    const entries = parsed.entries.slice(-MAX_BROWSING_ENTRIES).map((entry) => ({
+      id: entry.id,
+      state: normalizeResearchState(entry.state),
+    }));
+    const removed = Math.max(0, parsed.entries.length - entries.length);
+    return { entries, index: Math.max(0, Math.min(entries.length - 1, parsed.index - removed)) };
+  } catch {
+    return { entries: [{ id: fallback.document.article.id, state: fallback }], index: 0 };
+  }
+}
+
+function persistBrowsingSession(session: BrowsingSession) {
+  try {
+    localStorage.setItem(BROWSING_KEY, JSON.stringify(session));
+  } catch {
+    // A visually rich snapshot can be large. Keep the current page authoritative if the
+    // browser quota cannot also retain the complete six-page journey.
+    const current = session.entries[session.index];
+    try {
+      localStorage.setItem(BROWSING_KEY, JSON.stringify({ entries: [current], index: 0 }));
+    } catch {
+      localStorage.removeItem(BROWSING_KEY);
+    }
+  }
+}
+
 const quickBranches: Record<"verify" | "why" | "counterpoint", Pick<NodeInput, "title" | "summary">> = {
   verify: {
     title: "Verify this claim",
@@ -127,7 +179,13 @@ const quickBranches: Record<"verify" | "why" | "counterpoint", Pick<NodeInput, "
 };
 
 export function ResearchProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<ResearchState>(loadState);
+  const [initialSession] = useState(loadBrowsingSession);
+  const browsingRef = useRef(initialSession);
+  const [state, setState] = useState<ResearchState>(() => initialSession.entries[initialSession.index].state);
+  const [navigation, setNavigation] = useState(() => ({
+    canGoBack: initialSession.index > 0,
+    canGoForward: initialSession.index < initialSession.entries.length - 1,
+  }));
   const stateRef = useRef(state);
   const [activeAnchorId, setActiveAnchorId] = useState<string | undefined>(() => state.document.anchors[0]?.id);
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
@@ -138,7 +196,14 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     stateRef.current = state;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch { /* the browsing-session fallback below still keeps the live in-memory state */ }
+    browsingRef.current.entries[browsingRef.current.index] = {
+      id: state.document.article.id,
+      state,
+    };
+    persistBrowsingSession(browsingRef.current);
   }, [state]);
 
   useEffect(() => {
@@ -181,13 +246,39 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
   }, [flashActivity]);
 
   const replaceArticle = useCallback((article: ArticleDocument) => {
-    const next = replaceArticleInState(stateRef.current, article);
+    const imported = replaceArticleInState(emptyState(), article);
+    const next = { ...imported, undoStack: [], redoStack: [] };
+    const session = browsingRef.current;
+    session.entries[session.index] = { id: stateRef.current.document.article.id, state: stateRef.current };
+    session.entries = [...session.entries.slice(0, session.index + 1), { id: article.id, state: next }].slice(-MAX_BROWSING_ENTRIES);
+    session.index = session.entries.length - 1;
     stateRef.current = next;
     setState(next);
+    setNavigation({ canGoBack: session.index > 0, canGoForward: false });
     setActiveAnchorId(undefined);
     setSelectedNodeId(undefined);
-    flashActivity("Article imported into the garden");
+    setCurrentSelection(undefined);
+    flashActivity("Opened a new page in the garden");
   }, [flashActivity]);
+
+  const moveHistory = useCallback((delta: -1 | 1) => {
+    const session = browsingRef.current;
+    const nextIndex = session.index + delta;
+    if (nextIndex < 0 || nextIndex >= session.entries.length) return;
+    session.entries[session.index] = { id: stateRef.current.document.article.id, state: stateRef.current };
+    session.index = nextIndex;
+    const next = session.entries[nextIndex].state;
+    stateRef.current = next;
+    setState(next);
+    setNavigation({ canGoBack: session.index > 0, canGoForward: session.index < session.entries.length - 1 });
+    setActiveAnchorId(next.document.anchors[0]?.id);
+    setSelectedNodeId(undefined);
+    setCurrentSelection(undefined);
+    flashActivity(delta < 0 ? "Returned to the previous page" : "Moved forward a page");
+  }, [flashActivity]);
+
+  const goBack = useCallback(() => moveHistory(-1), [moveHistory]);
+  const goForward = useCallback(() => moveHistory(1), [moveHistory]);
 
   const createNodes = useCallback((command: CreateNodesCommand, actor: Actor) => {
     const current = stateRef.current;
@@ -288,7 +379,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     stateRef.current = result.state;
     setState(result.state);
     if (result.request.anchorId) setActiveAnchorId(result.request.anchorId);
-    window.dispatchEvent(new CustomEvent("livingpage:open-queue"));
+    window.dispatchEvent(new CustomEvent("livingpage:open-layers"));
     flashActivity("Added to the request queue");
     return result.request;
   }, [flashActivity]);
@@ -297,7 +388,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     const result = resolveRequestInState(stateRef.current, requestId, resolution);
     stateRef.current = result.state;
     setState(result.state);
-    window.dispatchEvent(new CustomEvent("livingpage:open-queue"));
+    window.dispatchEvent(new CustomEvent("livingpage:open-layers"));
     const remaining = result.state.requests.filter((request) => request.status === "pending").length;
     flashActivity(remaining
       ? `Agent resolved a request · ${remaining} left in the queue`
@@ -358,6 +449,10 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     anchorPassageForRequest,
     setCurrentSelection,
     replaceArticle,
+    canGoBack: navigation.canGoBack,
+    canGoForward: navigation.canGoForward,
+    goBack,
+    goForward,
     createNodes,
     addSourceToNode,
     addQuickBranch,
@@ -384,6 +479,9 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     createAnchor,
     anchorPassageForRequest,
     replaceArticle,
+    goBack,
+    goForward,
+    navigation,
     createNodes,
     addSourceToNode,
     addQuickBranch,
