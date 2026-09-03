@@ -3,8 +3,8 @@ import type { ArticleDocument } from "./types";
 export const defaultArticle: ArticleDocument = {
   id: "demo-ev-transition",
   title: "Is the electric vehicle transition accelerating again?",
-  deck: "One optimistic number can carry several different stories. Select a claim to grow its evidence, causes, and counterpoints.",
-  author: "Research Garden Briefing",
+  deck: "One optimistic number can carry several different stories. Select a claim to open up its evidence, causes, and counterpoints.",
+  author: "Living Page Briefing",
   publishedAt: "2026-09-01",
   siteName: "MOBILITY · MARKET SIGNALS",
   blocks: [

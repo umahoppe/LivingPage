@@ -128,13 +128,15 @@ interface BrowsingSession {
   index: number;
 }
 
-const BROWSING_KEY = "research-garden:browsing:v1";
+const BROWSING_KEY = "living-page:browsing:v1";
+/** Pre-rename key. Read once so a reader who already has a session keeps it. */
+const LEGACY_BROWSING_KEY = "research-garden:browsing:v1";
 const MAX_BROWSING_ENTRIES = 6;
 
 function loadBrowsingSession(): BrowsingSession {
   const fallback = loadState();
   try {
-    const raw = localStorage.getItem(BROWSING_KEY);
+    const raw = localStorage.getItem(BROWSING_KEY) ?? localStorage.getItem(LEGACY_BROWSING_KEY);
     if (!raw) return { entries: [{ id: fallback.document.article.id, state: fallback }], index: 0 };
     const parsed = JSON.parse(raw) as BrowsingSession;
     if (!Array.isArray(parsed.entries) || !parsed.entries.length) throw new Error("Empty browsing session");
@@ -244,7 +246,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     setActiveAnchorId(undefined);
     setSelectedNodeId(undefined);
     setCurrentSelection(undefined);
-    flashActivity("Opened a new page in the garden");
+    flashActivity("Opened a new page in Living Page");
   }, [flashActivity]);
 
   const moveHistory = useCallback((delta: -1 | 1) => {
@@ -493,7 +495,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
   ]);
 
   useEffect(() => {
-    window.researchGarden = {
+    window.livingPageHost = {
       getState: () => stateRef.current,
       getSelection: () => currentSelectionRef.current,
       anchorPassage: (input) => anchorPassageForRequest(input),
@@ -505,7 +507,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
       resolveRequest: (requestId, resolution) => resolveQueuedRequest(requestId, resolution),
     };
     return () => {
-      delete window.researchGarden;
+      delete window.livingPageHost;
     };
   }, [anchorPassageForRequest, createNodes, addSourceToNode, addLivingAnnotation, changeCanvasView, noteQueueRead, resolveQueuedRequest]);
 
@@ -520,7 +522,7 @@ export function useResearch() {
 
 declare global {
   interface Window {
-    researchGarden?: {
+    livingPageHost?: {
       getState: () => ResearchState;
       getSelection: () => LiveSelection | undefined;
       anchorPassage: (input: AnchorPassageInput) => { anchor: ResearchAnchor; alreadyExisted: boolean };

@@ -1,4 +1,4 @@
-# Research Garden progress
+# Living Page progress
 
 Original prompt: 添付の開発指示書を起点に、Canvasではなく閲覧中の文章へAnchorされたResearch Layerとして実装を進める。
 

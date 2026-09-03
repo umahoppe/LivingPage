@@ -1,5 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
+  // Deployed Worker name, kept pre-rename so the live workers.dev URL does not move.
   "name": "research-garden",
   "main": "./worker/index.ts",
   "compatibility_date": "2026-05-22",

@@ -9,8 +9,8 @@ import {
   ChevronRight,
   CircleDot,
   FileSearch,
-  Flower2,
   GitBranch,
+  Highlighter,
   Globe2,
   History,
   Image as ImageIcon,
@@ -793,10 +793,10 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-lockup">
-          <div className="brand-mark"><Flower2 size={18} strokeWidth={2.3} /></div>
+          <div className="brand-mark"><Highlighter size={18} strokeWidth={2.3} /></div>
           <div>
-            <strong>Research Garden</strong>
-            <span>Grow knowledge where you read</span>
+            <strong>Living Page</strong>
+            <span>Answers arrive where you asked</span>
           </div>
         </div>
         <div className="toolbar">
@@ -915,7 +915,7 @@ function App() {
                 />
               ))}
             </div>
-            <div className="article-end"><Flower2 size={19} /><span>End of briefing</span></div>
+            <div className="article-end"><Highlighter size={19} /><span>End of briefing</span></div>
           </div>}
         </article>
 
@@ -1140,7 +1140,7 @@ function LinkPeekPanel({
           <footer className="peek-actions">
             <span>Reading a linked page. Your research layer is untouched.</span>
             <button onClick={() => onReadHere(article)}>
-              <BookOpen size={13} />Study this page in the garden
+              <BookOpen size={13} />Study this page in Living Page
             </button>
           </footer>
         )}
@@ -1190,7 +1190,7 @@ function ArticleImportDialog({
         <button className="detail-close" onClick={onClose} aria-label="Close import"><X size={17} /></button>
         <div className="import-icon"><Globe2 size={20} /></div>
         <div className="eyebrow">ARTICLE IMPORT</div>
-        <h2 id="import-title">Bring a public article into the garden</h2>
+        <h2 id="import-title">Bring a public article into Living Page</h2>
         <p>We extract readable text and source metadata. Scripts, ads, forms, and embedded trackers are not imported.</p>
         <form onSubmit={submit}>
           <label htmlFor="article-url">Public article URL</label>
@@ -1689,7 +1689,7 @@ function ResearchLayer({
             <div className="empty-line line-b" />
             <div className="empty-node node-a" />
             <div className="empty-node node-b" />
-            <div className="empty-flower"><Flower2 size={27} /></div>
+            <div className="empty-brand"><Highlighter size={27} /></div>
           </div>
           <div className="step-label">STEP 01</div>
           <h3>Select a claim in the article</h3>

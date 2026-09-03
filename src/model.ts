@@ -22,7 +22,9 @@ import type {
 } from "./types";
 import { defaultArticle } from "./article-data";
 
-export const STORAGE_KEY = "research-garden:v1";
+export const STORAGE_KEY = "living-page:v1";
+/** Pre-rename key. Read once so a reader who already has a page keeps it. */
+export const LEGACY_STORAGE_KEY = "research-garden:v1";
 
 export const emptyDocument = (): ResearchDocument => ({
   version: 3,
@@ -861,7 +863,7 @@ export function redo(state: ResearchState): ResearchState {
 
 export function loadState(): ResearchState {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
     if (!raw) return emptyState();
     const parsed = JSON.parse(raw) as unknown as ResearchState;
     const storedVersion = (parsed.document as unknown as { version?: number } | undefined)?.version;

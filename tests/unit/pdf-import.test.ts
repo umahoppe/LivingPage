@@ -111,7 +111,7 @@ describe("the import endpoint routes a PDF response to the PDF reader", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   const env = { ASSETS: { fetch: async () => new Response("asset") } };
-  const importRequest = (url: string) => new Request("https://garden.example/api/import", {
+  const importRequest = (url: string) => new Request("https://livingpage.example/api/import", {
     method: "POST",
     body: JSON.stringify({ url }),
   });

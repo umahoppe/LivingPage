@@ -83,8 +83,8 @@ function compactLayer(state: ResearchState, anchorId?: string) {
 function getPageContext() {
   const article = document.querySelector("[data-article]");
   const selection = window.getSelection();
-  const state = window.researchGarden?.getState();
-  const liveSelection = window.researchGarden?.getSelection();
+  const state = window.livingPageHost?.getState();
+  const liveSelection = window.livingPageHost?.getSelection();
   return {
     pageTitle: document.title,
     pageUrl: location.href,
@@ -310,8 +310,8 @@ function readArticleBlocks(offset: number, limit: number) {
 }
 
 function requireBridge() {
-  if (!window.researchGarden) throw new Error("Research Garden is still initializing");
-  return window.researchGarden;
+  if (!window.livingPageHost) throw new Error("Living Page is still initializing");
+  return window.livingPageHost;
 }
 
 export function useWebMCP(): WebMCPStatus {

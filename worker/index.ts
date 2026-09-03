@@ -281,9 +281,9 @@ function sanitizeSnapshot(document: Document, sourceDocument: Document, baseUrl:
   titleNode.textContent = title;
   document.head.appendChild(titleNode);
   safeSnapshotStyles(sourceDocument, document, baseUrl);
-  const gardenStyle = document.createElement("style");
-  gardenStyle.textContent = SNAPSHOT_STYLE;
-  document.head.appendChild(gardenStyle);
+  const snapshotStyle = document.createElement("style");
+  snapshotStyle.textContent = SNAPSHOT_STYLE;
+  document.head.appendChild(snapshotStyle);
   const html = document.toString();
   return html.length <= MAX_SNAPSHOT_CHARS ? html : undefined;
 }
@@ -380,7 +380,7 @@ async function fetchPublicPage(initialUrl: URL): Promise<FetchedSource> {
       signal: AbortSignal.timeout(12_000),
       headers: {
         accept: "text/html,application/xhtml+xml,application/pdf",
-        "user-agent": "ResearchGarden/0.1 (+https://webmcp.devpost.com)",
+        "user-agent": "LivingPage/0.1 (+https://webmcp.devpost.com)",
       },
     });
     if ([301, 302, 303, 307, 308].includes(response.status)) {

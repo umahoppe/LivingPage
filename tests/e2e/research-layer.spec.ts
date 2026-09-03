@@ -1119,7 +1119,7 @@ test("a Visualize mark reaches the canvas without any research registered first"
       title: "Two readings of the 20%",
       data: { interactive: { id: "two-readings", title: "Two readings of the 20%", html } },
     });
-    const research = window.researchGarden!.getState();
+    const research = window.livingPageHost!.getState();
     return { nodes: research.document.nodes.length, canvasType: research.document.canvasView.type };
   }, comparisonHtml);
   expect(state.nodes).toBe(0);
