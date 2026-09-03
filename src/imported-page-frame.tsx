@@ -13,13 +13,22 @@ export interface SurfaceSelection {
   y: number;
 }
 
+export interface SurfaceAnchorRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
 interface ImportedPageFrameProps {
   article: ArticleDocument;
   anchors: ResearchAnchor[];
   annotations: LivingAnnotation[];
   searchQuery: string;
   revealedAnchorId?: string;
-  onAnchorOpen: (anchorId: string) => void;
+  onAnchorHoverStart: (anchorId: string, rect: SurfaceAnchorRect) => void;
+  onAnchorHoverEnd: () => void;
+  onAnchorPress: (anchorId: string, rect: SurfaceAnchorRect) => void;
   onLinkOpen: (url: string) => void;
   onSelectionChange: (selection?: SurfaceSelection) => void;
   onSearchCount: (count: number) => void;
@@ -43,33 +52,75 @@ function textNodes(root: Node) {
   return nodes;
 }
 
-function offsetInside(root: Element, target: Node, offset: number) {
-  let total = 0;
-  for (const node of textNodes(root)) {
-    if (node === target) return total + offset;
-    total += node.data.length;
+/**
+ * Readability stores a canonical block string with whitespace runs collapsed. The snapshot keeps
+ * the publisher's original text nodes, so raw DOM offsets cannot be used as canonical offsets.
+ * This index mirrors collectTextWithLinks in the importer and maps both directions.
+ */
+function canonicalTextIndex(root: Element) {
+  const nodes = textNodes(root);
+  const raw = nodes.map((node) => node.data).join("");
+  const canonicalAtRawBoundary = new Array<number>(raw.length + 1).fill(0);
+  let canonical = "";
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (/\s/.test(character)) {
+      if (canonical && !canonical.endsWith(" ")) canonical += " ";
+    } else {
+      canonical += character;
+    }
+    canonicalAtRawBoundary[index + 1] = canonical.length;
   }
-  return total;
+  canonical = canonical.trimEnd();
+  for (let index = 0; index < canonicalAtRawBoundary.length; index += 1) {
+    canonicalAtRawBoundary[index] = Math.min(canonicalAtRawBoundary[index], canonical.length);
+  }
+
+  const rawOffset = (target: Node, offset: number) => {
+    let total = 0;
+    for (const node of nodes) {
+      if (node === target) return total + Math.max(0, Math.min(node.data.length, offset));
+      total += node.data.length;
+    }
+    return total;
+  };
+  const positionAtRaw = (rawBoundary: number) => {
+    let cursor = 0;
+    for (const node of nodes) {
+      const next = cursor + node.data.length;
+      if (rawBoundary <= next) return { node, offset: Math.max(0, rawBoundary - cursor) };
+      cursor = next;
+    }
+    const node = nodes.at(-1);
+    return node ? { node, offset: node.data.length } : undefined;
+  };
+  const rawForCanonical = (offset: number, edge: "start" | "end") => {
+    const bounded = Math.max(0, Math.min(canonical.length, offset));
+    if (edge === "start") {
+      for (let index = 0; index < raw.length; index += 1) {
+        if (canonicalAtRawBoundary[index] === bounded && canonicalAtRawBoundary[index + 1] > bounded) return index;
+      }
+    }
+    const found = canonicalAtRawBoundary.findIndex((value) => value >= bounded);
+    return found < 0 ? raw.length : found;
+  };
+  return {
+    canonical,
+    canonicalOffset: (target: Node, offset: number) => canonicalAtRawBoundary[rawOffset(target, offset)] ?? canonical.length,
+    positionAtCanonical: (offset: number, edge: "start" | "end") => positionAtRaw(rawForCanonical(offset, edge)),
+  };
 }
 
 function rangeForOffsets(root: Element, start: number, end: number) {
   const document = root.ownerDocument!;
   const range = document.createRange();
-  let cursor = 0;
-  let started = false;
-  for (const node of textNodes(root)) {
-    const next = cursor + node.data.length;
-    if (!started && start <= next) {
-      range.setStart(node, Math.max(0, Math.min(node.data.length, start - cursor)));
-      started = true;
-    }
-    if (started && end <= next) {
-      range.setEnd(node, Math.max(0, Math.min(node.data.length, end - cursor)));
-      return range;
-    }
-    cursor = next;
-  }
-  return undefined;
+  const index = canonicalTextIndex(root);
+  const startPosition = index.positionAtCanonical(start, "start");
+  const endPosition = index.positionAtCanonical(end, "end");
+  if (!startPosition || !endPosition) return undefined;
+  range.setStart(startPosition.node, startPosition.offset);
+  range.setEnd(endPosition.node, endPosition.offset);
+  return range;
 }
 
 function highlightConstructor(document: Document) {
@@ -85,7 +136,7 @@ function searchableRanges(document: Document, query: string) {
   if (!needle) return [];
   const ranges: Range[] = [];
   for (const block of document.querySelectorAll<HTMLElement>("[data-rg-block-id]")) {
-    const text = textNodes(block).map((node) => node.data).join("");
+    const text = canonicalTextIndex(block).canonical;
     const lower = text.toLocaleLowerCase();
     let from = 0;
     while (ranges.length < 200) {
@@ -105,7 +156,9 @@ export function ImportedPageFrame({
   annotations,
   searchQuery,
   revealedAnchorId,
-  onAnchorOpen,
+  onAnchorHoverStart,
+  onAnchorHoverEnd,
+  onAnchorPress,
   onLinkOpen,
   onSelectionChange,
   onSearchCount,
@@ -132,13 +185,19 @@ export function ImportedPageFrame({
     for (const block of document.querySelectorAll<HTMLElement>("[data-rg-block-id]")) {
       const blockAnchors = anchors.filter((anchor) => anchor.blockId === block.dataset.rgBlockId);
       if (!blockAnchors.length) continue;
-      const count = document.createElement("button");
-      count.type = "button";
-      count.className = "rg-injected rg-anchor-count";
-      count.dataset.anchorId = blockAnchors[0].id;
-      count.textContent = `${blockAnchors.length} layer${blockAnchors.length === 1 ? "" : "s"}`;
-      count.title = "Open this passage in Research Garden";
-      block.prepend(count);
+      const rail = document.createElement("span");
+      rail.className = "rg-injected rg-anchor-rail";
+      rail.setAttribute("aria-label", `${blockAnchors.length} anchored passage${blockAnchors.length === 1 ? "" : "s"}`);
+      for (const [index, anchor] of blockAnchors.entries()) {
+        const pin = document.createElement("button");
+        pin.type = "button";
+        pin.className = "rg-anchor-count";
+        pin.dataset.anchorId = anchor.id;
+        pin.textContent = blockAnchors.length === 1 ? "1 layer" : String(index + 1);
+        pin.title = `Preview anchor: ${anchor.quote}`;
+        rail.appendChild(pin);
+      }
+      block.prepend(rail);
 
       for (const anchor of blockAnchors) {
         for (const annotation of annotations.filter((item) => item.anchorId === anchor.id && item.type !== "highlight" && !item.isCollapsed)) {
@@ -242,8 +301,9 @@ export function ImportedPageFrame({
       }
       const canonical = article.blocks.find((candidate) => candidate.id === block.dataset.rgBlockId);
       if (!canonical) return;
-      let startOffset = offsetInside(block, range.startContainer, range.startOffset);
-      let endOffset = offsetInside(block, range.endContainer, range.endOffset);
+      const textIndex = canonicalTextIndex(block);
+      let startOffset = textIndex.canonicalOffset(range.startContainer, range.startOffset);
+      let endOffset = textIndex.canonicalOffset(range.endContainer, range.endOffset);
       const selected = canonical.text.slice(startOffset, endOffset);
       startOffset += selected.length - selected.trimStart().length;
       endOffset -= selected.length - selected.trimEnd().length;
@@ -261,6 +321,16 @@ export function ImportedPageFrame({
         y: frameRect.top + rect.bottom,
       });
     };
+    const anchorRect = (element: Element): SurfaceAnchorRect => {
+      const rect = element.getBoundingClientRect();
+      const frameRect = frame.getBoundingClientRect();
+      return {
+        left: frameRect.left + rect.left,
+        top: frameRect.top + rect.top,
+        right: frameRect.left + rect.right,
+        bottom: frameRect.top + rect.bottom,
+      };
+    };
     const click = (event: MouseEvent) => {
       const target = event.target && (event.target as Node).nodeType === Node.ELEMENT_NODE
         ? event.target as Element
@@ -268,7 +338,7 @@ export function ImportedPageFrame({
       const anchorBadge = target?.closest<HTMLElement>("[data-anchor-id]");
       if (anchorBadge?.dataset.anchorId) {
         event.preventDefault();
-        onAnchorOpen(anchorBadge.dataset.anchorId);
+        onAnchorPress(anchorBadge.dataset.anchorId, anchorRect(anchorBadge));
         return;
       }
       const link = target?.closest<HTMLAnchorElement>("a[href]");
@@ -277,10 +347,22 @@ export function ImportedPageFrame({
       if (link.href.startsWith("http://") || link.href.startsWith("https://")) onLinkOpen(link.href);
       else if (link.hash) document.querySelector(link.hash)?.scrollIntoView({ behavior: "smooth" });
     };
+    const pointerOver = (event: PointerEvent) => {
+      const element = event.target && (event.target as Node).nodeType === Node.ELEMENT_NODE ? event.target as Element : null;
+      const target = element?.closest<HTMLElement>("[data-anchor-id]");
+      if (target?.dataset.anchorId) onAnchorHoverStart(target.dataset.anchorId, anchorRect(target));
+    };
+    const pointerOut = (event: PointerEvent) => {
+      const element = event.target && (event.target as Node).nodeType === Node.ELEMENT_NODE ? event.target as Element : null;
+      const target = element?.closest<HTMLElement>("[data-anchor-id]");
+      if (target?.dataset.anchorId) onAnchorHoverEnd();
+    };
     document.addEventListener("selectionchange", readSelection);
     document.addEventListener("pointerup", readSelection, true);
     document.addEventListener("keyup", readSelection, true);
     document.addEventListener("click", click, true);
+    document.addEventListener("pointerover", pointerOver, true);
+    document.addEventListener("pointerout", pointerOut, true);
 
     const surface: ArticleSurfaceAdapter = {
       clearSelection: () => frameWindow.getSelection()?.removeAllRanges(),
@@ -309,9 +391,11 @@ export function ImportedPageFrame({
       document.removeEventListener("pointerup", readSelection, true);
       document.removeEventListener("keyup", readSelection, true);
       document.removeEventListener("click", click, true);
+      document.removeEventListener("pointerover", pointerOver, true);
+      document.removeEventListener("pointerout", pointerOut, true);
       setArticleSurface(undefined);
     };
-  }, [anchors, article.blocks, article.title, onAnchorOpen, onLinkOpen, onSelectionChange, updateSearch]);
+  }, [anchors, article.blocks, article.title, onAnchorHoverEnd, onAnchorHoverStart, onAnchorPress, onLinkOpen, onSelectionChange, updateSearch]);
 
   useEffect(() => () => cleanupRef.current(), []);
 

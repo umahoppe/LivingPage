@@ -187,6 +187,8 @@ export interface VisualizationData {
 export interface CanvasViewState {
   type: CanvasType;
   title: string;
+  /** Article passages explicitly represented by this one canvas result. */
+  sourceAnchorIds: string[];
   focusedNodeIds: string[];
   layout: string;
   filters: string[];

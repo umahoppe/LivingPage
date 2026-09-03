@@ -35,7 +35,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { defaultArticle } from "./article-data";
 import { getArticleSurface, nativeArticleSurface, setArticleSurface } from "./article-surface";
-import { ImportedPageFrame, type SurfaceSelection } from "./imported-page-frame";
+import { ImportedPageFrame, type SurfaceAnchorRect, type SurfaceSelection } from "./imported-page-frame";
 import { InteractiveCanvasView } from "./interactive-canvas";
 import { MAX_ANCHOR_CHARACTERS, MIN_ANCHOR_CHARACTERS } from "./model";
 import { MapCanvasView } from "./map-canvas";
@@ -96,6 +96,7 @@ function buildQueueHandoffPrompt() {
     "1. Call get_pending_requests. That list is my request, in the order I marked it in the article; do not ask me to restate it in chat.",
     "2. Read get_visible_page_context and get_research_layer once before writing, so you do not repeat what is already on the page.",
     "3. Work through the queue in order. For each entry use its anchorId with the tool that fits its intent: insert_inline_explanation, insert_simplified_layer, insert_image_layer, add_highlight, add_verification, create_research_nodes, add_research_source, create_visualization, update_visualization, or set_map_view.",
+    "Before handling Visualize entries, collect every pending Visualize mark. The canvas holds one result, so when there are several, create one combined visualization that explicitly represents every marked quote. Call create_visualization once and pass sourceAnchorIds containing every included anchorId; do not overwrite one mark with another.",
     "An entry with scope \"document\" is about the whole article and has no anchor yet: read get_article_blocks, then anchor the exact words you are answering about with anchor_passage and that requestId. Anchor only what my request actually needs.",
     "The canvas holds one thing at a time: a Map, or one interactive widget. A diagram, a chronology, and a comparison are all widgets you write yourself.",
     "For a map, supply real WGS84 latitude and longitude for every marker yourself; the page does not geocode place names.",
@@ -132,6 +133,7 @@ interface AnchorLayerSummary {
   /** Requests marked on this passage that the agent has not cleared yet. */
   waiting: PendingRequest[];
   badges: AnchorLayerBadge[];
+  canvas?: { type: CanvasType; label: string };
 }
 
 const annotationBadge: Record<LivingAnnotation["type"], string> = {
@@ -190,6 +192,8 @@ function getAnchorLayerSummary(
       tone: "research",
     });
   }
+  const canvas = getAnchorCanvasLink(document.canvasView, nodes, anchor.id);
+  if (canvas) badges.push({ key: "canvas", label: canvas.label, tone: "canvas" });
   // Only a genuinely pending request says "waiting" now; each one prints its own badge above.
   // A passage the agent answered by skipping has nothing attached and is not waiting on anything.
   if (!badges.length) {
@@ -202,6 +206,7 @@ function getAnchorLayerSummary(
     topNodes: nodes.filter((node) => !node.parentId),
     waiting,
     badges,
+    canvas,
   };
 }
 
@@ -332,8 +337,7 @@ function App() {
     peekCloseTimer.current = undefined;
   }, []);
 
-  const placeAnchorPeek = useCallback((anchorId: string, trigger: HTMLElement, pinned: boolean) => {
-    const rect = trigger.getBoundingClientRect();
+  const placeAnchorPeekAtRect = useCallback((anchorId: string, rect: SurfaceAnchorRect, pinned: boolean) => {
     const preferredWidth = 320;
     const estimatedHeight = 250;
     const pageMargin = 16;
@@ -359,6 +363,25 @@ function App() {
     setActiveAnchorId(anchorId);
     setAnchorPeek({ anchorId, left, top, width, pinned });
   }, [setActiveAnchorId]);
+
+  const placeAnchorPeek = useCallback((anchorId: string, trigger: HTMLElement, pinned: boolean) => {
+    placeAnchorPeekAtRect(anchorId, trigger.getBoundingClientRect(), pinned);
+  }, [placeAnchorPeekAtRect]);
+
+  const previewSnapshotAnchor = useCallback((anchorId: string, rect: SurfaceAnchorRect) => {
+    if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches || anchorPeek?.pinned) return;
+    clearPeekTimers();
+    peekOpenTimer.current = window.setTimeout(() => placeAnchorPeekAtRect(anchorId, rect, false), 180);
+  }, [anchorPeek?.pinned, clearPeekTimers, placeAnchorPeekAtRect]);
+
+  const pinSnapshotAnchor = useCallback((anchorId: string, rect: SurfaceAnchorRect) => {
+    clearPeekTimers();
+    if (anchorPeek?.anchorId === anchorId && anchorPeek.pinned) {
+      setAnchorPeek(undefined);
+      return;
+    }
+    placeAnchorPeekAtRect(anchorId, rect, true);
+  }, [anchorPeek, clearPeekTimers, placeAnchorPeekAtRect]);
 
   const previewAnchor = useCallback((anchorId: string, trigger: HTMLElement) => {
     if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches || anchorPeek?.pinned) return;
@@ -688,7 +711,7 @@ function App() {
     ? getAnchorLayerSummary(state.document, peekAnchor, state.requests.filter((request) => request.status === "pending"))
     : undefined;
   const peekCanvas = peekAnchor && peekSummary
-    ? getAnchorCanvasLink(state.document.canvasView, peekSummary.nodes)
+    ? peekSummary.canvas
     : undefined;
 
   return (
@@ -756,7 +779,9 @@ function App() {
                 annotations={state.document.annotations}
                 searchQuery={findInput}
                 revealedAnchorId={revealedAnchorId}
-                onAnchorOpen={openAnchorInLayers}
+                onAnchorHoverStart={previewSnapshotAnchor}
+                onAnchorHoverEnd={scheduleAnchorPeekClose}
+                onAnchorPress={pinSnapshotAnchor}
                 onLinkOpen={(url) => void navigateToUrl(url)}
                 onSelectionChange={updateSnapshotSelection}
                 onSearchCount={setFindCount}
@@ -1630,7 +1655,7 @@ function ResearchLayer({
                         ))}
                       </div>
                     )}
-                    {!summary.annotations.length && !summary.nodes.length && !summary.waiting.length && (
+                    {!summary.annotations.length && !summary.nodes.length && !summary.waiting.length && !summary.canvas && (
                       <div className="empty-anchor-copy">
                         <Sparkles size={17} />
                         <span>Nothing is attached to this passage yet. Mark it again from the article, or ask for something in the ask bar.</span>
@@ -1808,9 +1833,11 @@ function countCanvasItems(view: CanvasViewState) {
 function getAnchorCanvasLink(
   view: CanvasViewState,
   anchorNodes: ResearchNode[],
+  anchorId?: string,
 ): { type: CanvasType; label: string } | undefined {
   if (countCanvasItems(view) === 0) return undefined;
   const type: CanvasType = view.data.interactive && view.type !== "map" ? "interactive" : "map";
+  if (anchorId && view.sourceAnchorIds.includes(anchorId)) return { type, label: canvasLabel[type] };
   const sourceNodeIds = type === "interactive"
     ? view.data.interactive?.sourceNodeIds ?? []
     : view.data.map?.markers.flatMap((marker) => marker.sourceNodeIds ?? []) ?? [];
@@ -1818,8 +1845,9 @@ function getAnchorCanvasLink(
   if (sourceNodeIds.length > 0) {
     const anchorNodeIds = new Set(anchorNodes.map((node) => node.id));
     if (!sourceNodeIds.some((nodeId) => anchorNodeIds.has(nodeId))) return undefined;
+    return { type, label: canvasLabel[type] };
   }
-  return { type, label: canvasLabel[type] };
+  return undefined;
 }
 
 function EmptyVisualization({ type }: { type: CanvasType }) {

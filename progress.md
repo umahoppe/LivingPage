@@ -151,3 +151,14 @@ Original prompt: 添付の開発指示書を起点に、Canvasではなく閲覧
 - 検証: unit 43/43、Playwright E2E 13/13、ESLint、TypeScript、production build成功。実ブラウザで選択メニュー5個・2タブ・Canvas空状態・Inline画像レイヤーと拡大Previewを確認し、console error 0。
 - 未完: Staged Agent Changes、Profile UI、公開環境でのWebMCPライブ呼び出し。
 - 次アクション: Sitesへ再デプロイし、WebMCP対応ブラウザで`insert_image_layer`と`livingPage.openCard`をライブ実行して往復を確認する。
+
+## 2026-09-03 — Imported Page Anchor / Visualize Loop
+
+- 問題: 元ページSnapshotのDOMは出版社由来の改行・連続空白を保持する一方、保存する`ArticleBlock.text`は空白を正規化していた。DOMの生Offsetを正規化済み文字列へそのまま適用したため、選択引用と右Layersカードが1文字以上ずれる場合があった。
+- 完了: Snapshot DOMと正規化本文の双方向Offset mapを追加した。選択、Anchor highlight、ページ内検索が同じcanonical文字位置を使うため、リンクや改行を跨ぐ選択でも表示引用と保存引用が一致する。
+- 完了: 元ページ表示で失われていたページ内Anchor操作を復元した。各Anchorを番号付きPinとして表示し、hoverで一時Preview、clickで固定Previewを開く。複数Anchorも個別に選べる。
+- 完了: `CanvasViewState.sourceAnchorIds`を追加し、Visualize結果を元の全Anchorへ明示的に関連付けた。解決後は各LayersカードにCanvasバッジが残り、空状態メッセージは出ない。Anchor削除時は関連IDも安全に除去する。
+- 完了: `get_pending_requests`が`visualizeBatch`を返すようにし、複数Visualize markがある場合は全`sourceAnchorIds`を含む単一Visualizationだけを受理するようツール境界で検証した。部分的なCanvas生成は拒否され、後続markによる上書きを防ぐ。
+- 検証: unit 44/44、Playwright E2E 16/16、ESLint、TypeScript、production build成功。新規E2Eで不規則な空白とinline linkを跨ぐ選択の完全一致、Snapshot内Pinのhover/click Preview、複数Visualizeの部分生成拒否、統合Canvas内の両引用表示、両AnchorのCanvasバッジ、空メッセージ消失を確認した。console error 0。
+- 未完: 公開環境への再デプロイと、WebMCP対応ブラウザ上の実Agentによる複数Visualize batch確認。
+- 次アクション: Sitesへ再デプロイする場合は、公開URLで2箇所をVisualize markし、Agentが`visualizeBatch.sourceAnchorIds`を使って一枚の統合Canvasを生成することを確認する。

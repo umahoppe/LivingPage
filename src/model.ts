@@ -35,6 +35,7 @@ export const emptyDocument = (): ResearchDocument => ({
   canvasView: {
     type: "interactive",
     title: "Canvas",
+    sourceAnchorIds: [],
     focusedNodeIds: [],
     layout: "auto",
     filters: [],
@@ -131,12 +132,13 @@ function withoutLegacyCanvasTypes(document: ResearchDocument): ResearchDocument 
   const isLive = view.type === "map" || view.type === "interactive";
   const data = { map: view.data?.map, interactive: view.data?.interactive };
   const hasStaleData = Object.keys(view.data ?? {}).some((key) => key !== "map" && key !== "interactive");
-  if (isLive && !hasStaleData) return document;
+  if (isLive && !hasStaleData && Array.isArray(view.sourceAnchorIds)) return document;
   const type = data.map?.markers.length ? "map" : "interactive";
   return {
     ...document,
     canvasView: {
       ...view,
+      sourceAnchorIds: view.sourceAnchorIds ?? [],
       type,
       title: isLive ? view.title : type === "map" ? "Map" : "Canvas",
       data,
@@ -542,6 +544,10 @@ export function removeAnchor(state: ResearchState, anchorId: string): ResearchSt
     ...cleaned,
     anchors: cleaned.anchors.filter((anchor) => anchor.id !== anchorId),
     annotations: cleaned.annotations.filter((annotation) => annotation.anchorId !== anchorId),
+    canvasView: {
+      ...cleaned.canvasView,
+      sourceAnchorIds: cleaned.canvasView.sourceAnchorIds.filter((id) => id !== anchorId),
+    },
   }, "Removed an article anchor and its layers", "human"));
 }
 

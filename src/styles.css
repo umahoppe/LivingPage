@@ -487,6 +487,7 @@ mark .article-link { color: #24513a; }
 .layer-badge.verified { border-color: #cddfd2; background: #e7f1ea; color: #35664a; }
 .layer-badge.images { border-color: #dfdfcd; background: #f6f5e9; color: #6d6c42; }
 .layer-badge.research { border-color: #dcd8e8; background: #f0edf7; color: #5b5080; }
+.layer-badge.canvas { border-color: #cbd9e8; background: #edf4fa; color: #3f627d; }
 .layer-badge.agent-anchored { border-color: #d3d9e6; background: #edf1f8; color: #4d5a7a; }
 .layer-badge.waiting, .layer-badge.empty { border-style: dashed; border-color: #ccd2cb; background: transparent; color: #878f88; }
 

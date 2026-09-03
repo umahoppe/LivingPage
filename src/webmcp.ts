@@ -228,17 +228,45 @@ function readPendingRequests(includeResolved: boolean, limit: number) {
   const state = bridge.getState();
   const pending = state.requests.filter((request) => request.status === "pending");
   const selected = (includeResolved ? state.requests : pending).slice(0, limit);
+  const visualizeAnchorIds = pendingVisualizeAnchorIds(state);
   bridge.markQueueRead();
   return {
     revision: state.document.revision,
     articleTitle: state.document.article.title,
     pendingCount: pending.length,
     returnedCount: selected.length,
+    visualizeBatch: visualizeAnchorIds.length ? {
+      sourceAnchorIds: visualizeAnchorIds,
+      instruction: visualizeAnchorIds.length > 1
+        ? "Create one combined visualization that explicitly represents every marked quote. Call create_visualization once with all sourceAnchorIds; the single canvas must not be overwritten once per mark."
+        : "Pass this sourceAnchorId to create_visualization so the passage remains linked to its canvas result.",
+    } : null,
     requests: selected.map((request) => describeRequest(state, request)),
     nextStep: pending.length
-      ? "Work through the pending requests in order. An entry with scope \"passage\" already carries the reader's anchorId; an entry with scope \"document\" covers the whole article, so read get_article_blocks and anchor the exact words you answer about with anchor_passage first. Apply each one with the page-changing tool that fits its intent, then call resolve_request with its requestId so the reader sees it clear."
+      ? "Work through the pending requests in order. Combine all Visualize marks into the one canvas result and pass every included anchorId as sourceAnchorIds. An entry with scope \"passage\" already carries the reader's anchorId; an entry with scope \"document\" covers the whole article, so read get_article_blocks and anchor the exact words you answer about with anchor_passage first. Apply each one with the page-changing tool that fits its intent, then call resolve_request with its requestId so the reader sees it clear."
       : "The reader has not marked anything yet. Ask them to select article text and choose an action from the selection menu.",
   };
+}
+
+function pendingVisualizeAnchorIds(state: ResearchState) {
+  return [...new Set(state.requests
+    .filter((request) => request.status === "pending" && request.intent === "visualize")
+    .flatMap((request) => request.anchorId
+      ? [request.anchorId]
+      : state.document.anchors.filter((anchor) => anchor.requestId === request.id).map((anchor) => anchor.id)))];
+}
+
+function validatedVisualizationAnchors(state: ResearchState, supplied: unknown, fallback: string[] = []) {
+  const pendingIds = pendingVisualizeAnchorIds(state);
+  const explicit = [...new Set((supplied as string[] | undefined) ?? [])];
+  const sourceAnchorIds = explicit.length > 0 ? explicit : pendingIds.length === 1 ? pendingIds : fallback;
+  const unknownAnchor = sourceAnchorIds.find((id) => !state.document.anchors.some((anchor) => anchor.id === id));
+  if (unknownAnchor) throw new Error(`Unknown source anchor: ${unknownAnchor}`);
+  const missing = pendingIds.filter((id) => !sourceAnchorIds.includes(id));
+  if (missing.length > 0) {
+    throw new Error(`There are ${pendingIds.length} pending Visualize marks. Create one combined visualization and pass every sourceAnchorId: ${pendingIds.join(", ")}`);
+  }
+  return sourceAnchorIds;
 }
 
 function readArticleBlocks(offset: number, limit: number) {
@@ -682,7 +710,7 @@ export function useWebMCP(): WebMCPStatus {
       {
         name: "create_visualization",
         title: "Transform the visual canvas",
-        description: `Fill the one visual canvas. It holds exactly two kinds of thing, and sending a new one replaces what is there. "interactive" is an html widget you write yourself, and it is how you draw a diagram, a chronology, a comparison, a model the reader can operate, or anything else made of text and markup. "map" is host-drawn, and is the right answer only when the subject is really places — the sandbox blocks the network map tiles come from, so a widget cannot draw one. Pictures are neither: the sandbox cannot load an external image, so put them beside the passage with insert_image_layer. Build from the research layer when one exists, or directly from the article and your own sources when it does not — this tool never requires existing research nodes.
+        description: `Fill the one visual canvas. It holds exactly two kinds of thing, and sending a new one replaces what is there. When several Visualize marks are pending, combine every marked quote into one result and pass all of their anchorIds in sourceAnchorIds; this tool refuses a partial batch so one mark cannot overwrite another. "interactive" is an html widget you write yourself, and it is how you draw a diagram, a chronology, a comparison, a model the reader can operate, or anything else made of text and markup. "map" is host-drawn, and is the right answer only when the subject is really places — the sandbox blocks the network map tiles come from, so a widget cannot draw one. Pictures are neither: the sandbox cannot load an external image, so put them beside the passage with insert_image_layer. Build from the research layer when one exists, or directly from the article and your own sources when it does not — this tool never requires existing research nodes.
 
 Map data uses map.markers items with id, label, lat, lng, note, kind, sourceUrl, sourceLabel, and sourceNodeIds, plus optional map.center {lat,lng}, map.zoom (1-19), and map.focusMarkerId; supply real WGS84 coordinates yourself, since the page does not geocode place names.
 
@@ -693,6 +721,7 @@ Interactive data uses interactive with id, title, note, sourceNodeIds, and html:
           properties: {
             type: { type: "string", enum: ["interactive", "map"] },
             title: { type: "string", maxLength: 120 },
+            sourceAnchorIds: { type: "array", items: { type: "string" }, maxItems: 30, description: "Every anchored passage represented by this single canvas result. Required when Visualize marks are pending." },
             sourceNodeIds: { type: "array", items: { type: "string" }, maxItems: 30 },
             data: { type: "object" },
             config: { type: "object" },
@@ -700,9 +729,12 @@ Interactive data uses interactive with id, title, note, sourceNodeIds, and html:
           additionalProperties: false,
         },
         execute: async (input) => {
+          const state = requireBridge().getState();
+          const sourceAnchorIds = validatedVisualizationAnchors(state, input.sourceAnchorIds);
           const view: Partial<CanvasViewState> & Pick<CanvasViewState, "type"> = {
             type: input.type as CanvasType,
             title: input.title as string,
+            sourceAnchorIds,
             focusedNodeIds: input.sourceNodeIds as string[] | undefined,
             layout: "auto",
             visualConfig: (input.config as CanvasViewState["visualConfig"] | undefined) ?? {},
@@ -766,6 +798,7 @@ Interactive data uses interactive with id, title, note, sourceNodeIds, and html:
           properties: {
             type: { type: "string", enum: ["interactive", "map"] },
             title: { type: "string", maxLength: 120 },
+            sourceAnchorIds: { type: "array", items: { type: "string" }, maxItems: 30 },
             sourceNodeIds: { type: "array", items: { type: "string" }, maxItems: 30 },
             data: { type: "object" },
             config: { type: "object" },
@@ -773,10 +806,12 @@ Interactive data uses interactive with id, title, note, sourceNodeIds, and html:
           additionalProperties: false,
         },
         execute: async (input) => {
-          const current = requireBridge().getState().document.canvasView;
+          const state = requireBridge().getState();
+          const current = state.document.canvasView;
           requireBridge().setCanvasView({
             type: (input.type as CanvasType | undefined) ?? current.type,
             title: (input.title as string | undefined) ?? current.title,
+            sourceAnchorIds: validatedVisualizationAnchors(state, input.sourceAnchorIds, current.sourceAnchorIds),
             focusedNodeIds: (input.sourceNodeIds as string[] | undefined) ?? current.focusedNodeIds,
             layout: current.layout,
             visualConfig: (input.config as CanvasViewState["visualConfig"] | undefined) ?? current.visualConfig,

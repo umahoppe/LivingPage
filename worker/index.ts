@@ -198,7 +198,9 @@ a { cursor: pointer; }
 ::highlight(rg-anchors) { background: rgba(244, 205, 91, .42); text-decoration: underline; text-decoration-color: #9b7830; text-underline-offset: 3px; }
 ::highlight(rg-search) { background: #ffd75e; color: #171a17; }
 .rg-injected { box-sizing: border-box; font-family: system-ui, sans-serif; }
-.rg-anchor-count { float: right; margin: 2px 0 4px 10px; border: 1px solid #a9c2b0; border-radius: 999px; padding: 3px 7px; background: #edf5ef; color: #315c40; font: 700 10px/1 system-ui, sans-serif; cursor: pointer; }
+.rg-anchor-rail { float: right; display: inline-flex; gap: 4px; margin: 2px 0 4px 10px; }
+.rg-anchor-count { width: 24px; height: 24px; border: 1px solid #8daf98; border-radius: 999px; padding: 0; background: #e4f1e7; color: #28573a; box-shadow: 0 2px 7px rgba(36,79,52,.16); font: 700 10px/1 system-ui, sans-serif; cursor: pointer; }
+.rg-anchor-count:hover, .rg-anchor-count:focus-visible { background: #315f42; color: #fff; outline: 2px solid rgba(49,95,66,.22); outline-offset: 2px; }
 .rg-inline-layer { clear: both; margin: 10px 0 18px; border: 1px solid #cbd9ce; border-left: 3px solid #4f8060; border-radius: 9px; padding: 10px 12px; background: #f4f8f4; color: #34443a; font: 13px/1.55 system-ui, sans-serif; }
 .rg-inline-layer strong { display: block; margin-bottom: 4px; font-size: 12px; }
 .rg-inline-layer p { margin: 0; font: inherit; color: inherit; }

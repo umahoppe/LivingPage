@@ -458,6 +458,122 @@ test("browses safe page snapshots and restores per-page research when going back
   expect(consoleErrors).toEqual([]);
 });
 
+test("snapshot anchors keep canonical offsets and restore their in-page preview", async ({ page }) => {
+  await installWebMCPStub(page);
+  const canonical = "Alpha linked words continue after deliberately irregular publisher spacing for this imported article paragraph.";
+  const snapshotHtml = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'"><style>body{padding:40px;font-size:18px}</style></head><body><h1>Whitespace story</h1><p data-rg-block-id="imported-0">\n  Alpha   <a href="https://example.com/more">linked words</a>\n    continue after deliberately irregular publisher spacing for this imported article paragraph. </p></body></html>`;
+  await page.route("**/api/import", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ article: {
+      id: "article_whitespace",
+      title: "Whitespace story",
+      deck: "Offset regression",
+      author: "Test",
+      sourceUrl: "https://example.com/whitespace",
+      siteName: "Example",
+      importedAt: "2026-09-03T00:00:00Z",
+      snapshotHtml,
+      blocks: [{ id: "imported-0", kind: "p", text: canonical }],
+    } }),
+  }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "Import article", exact: true }).first().click();
+  await page.getByLabel("Public article URL").fill("https://example.com/whitespace");
+  await page.getByRole("button", { name: "Import article", exact: true }).last().click();
+
+  const frame = page.frameLocator('iframe[title="Static snapshot of Whitespace story"]');
+  await frame.locator('[data-rg-block-id="imported-0"]').evaluate((element) => {
+    const link = element.querySelector("a")!;
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    range.setStart(link.firstChild!, 0);
+    range.setEnd(link.nextSibling!, link.nextSibling!.textContent!.indexOf(" after"));
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.getByRole("button", { name: "Verify selection" }).click();
+
+  const current = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    return JSON.parse((await tools.get_current_selection.execute({})).content[0].text) as { selectedText: string; position: { startOffset: number; endOffset: number } };
+  });
+  expect(current.selectedText).toBe("linked words continue");
+  expect(canonical.slice(current.position.startOffset, current.position.endOffset)).toBe(current.selectedText);
+  await expect(page.locator(".anchor-quote")).toContainText("linked words continue");
+
+  const pin = frame.locator(".rg-anchor-count");
+  await expect(pin).toBeVisible();
+  await pin.hover();
+  await expect(page.locator(".anchor-peek")).toContainText("linked words continue");
+  await pin.click();
+  await expect(page.locator(".anchor-peek.pinned")).toBeVisible();
+});
+
+test("multiple Visualize marks must become one canvas linked to every passage", async ({ page }) => {
+  await installWebMCPStub(page);
+  await page.goto("/");
+  await expect(page.getByText("WebMCP tools registered")).toBeVisible();
+
+  const mark = async (blockId: string, length: number) => {
+    await page.locator(`[data-block-id="${blockId}"]`).evaluate((element, chars) => {
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+      range.setStart(element.firstChild!, 0);
+      range.setEnd(element.firstChild!, chars);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+    }, length);
+    await page.getByRole("button", { name: "Visualize selection" }).click();
+  };
+  await mark("claim-growth", 34);
+  await mark("regional-gap", 34);
+
+  const queue = await page.evaluate(async () => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    return JSON.parse((await tools.get_pending_requests.execute({})).content[0].text) as {
+      requests: Array<{ requestId: string; anchorId: string; quote: string }>;
+      visualizeBatch: { sourceAnchorIds: string[]; instruction: string };
+    };
+  });
+  expect(queue.visualizeBatch.sourceAnchorIds).toEqual(queue.requests.map((request) => request.anchorId));
+  expect(queue.visualizeBatch.instruction).toContain("one combined visualization");
+
+  const partialError = await page.evaluate(async ({ requests }) => {
+    const tools = (window as unknown as { __webmcpTools: Record<string, { execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }).__webmcpTools;
+    let message = "";
+    try {
+      await tools.create_visualization.execute({
+        type: "interactive",
+        title: "Partial",
+        sourceAnchorIds: [requests[0].anchorId],
+        data: { interactive: { id: "partial", title: "Partial", html: `<p>${requests[0].quote}</p>` } },
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    await tools.create_visualization.execute({
+      type: "interactive",
+      title: "Both marked passages",
+      sourceAnchorIds: requests.map((request) => request.anchorId),
+      data: { interactive: { id: "combined", title: "Both marked passages", html: `<h1>Combined</h1>${requests.map((request) => `<p>${request.quote}</p>`).join("")}` } },
+    });
+    for (const request of requests) await tools.resolve_request.execute({ requestId: request.requestId, summary: "Included in the combined canvas." });
+    return message;
+  }, { requests: queue.requests });
+  expect(partialError).toContain("pending Visualize marks");
+
+  await page.getByRole("tab", { name: /Canvas/ }).click();
+  const canvas = page.frameLocator('[data-canvas-type="interactive"] iframe.interactive-frame');
+  await expect(canvas.getByText(queue.requests[0].quote)).toBeVisible();
+  await expect(canvas.getByText(queue.requests[1].quote)).toBeVisible();
+  await page.getByRole("tab", { name: /Layers/ }).click();
+  await expect(page.locator(".layer-badge.canvas")).toHaveCount(2);
+  await expect(page.getByText("Nothing is attached to this passage yet.")).toHaveCount(0);
+});
+
 test("an imported PDF carries no markup but keeps every layer the page offers", async ({ page }) => {
   const consoleErrors: string[] = [];
   page.on("console", (message) => {
